@@ -11,13 +11,22 @@
   - **rclone**: ponad 40 dostawców chmurowych (Google Drive, Microsoft OneDrive, Amazon S3, Backblaze B2, Nextcloud, SFTP, WebDAV i inne).
 - **Unikalna numeracja zadań (#ID) i kolejkowanie:**
   - Każde zadanie posiada czytelny identyfikator numeryczny (`#1`, `#2`, `#3`...).
+  - **Inteligentne unikanie luk w numeracji:** usunięcie zadania o najwyższym numerze (np. omyłkowo zduplikowanego zadania `#21`) powoduje automatyczne cofnięcie licznika, dzięki czemu kolejne utworzone zadanie ponownie otrzymuje zwolniony numer (`#21`).
   - **Kolejkowanie łańcuchowe (Task Chaining):** automatyczne uruchamianie zadania zależnego po pomyślnym zakończeniu innego zadania.
+  - **Konfigurowalny odstęp kolejki (Queue Breather):** parametr `queueStartDelaySeconds` pozwalający ustalić bufor odpoczynku (np. 5 sekund) przed startem kolejnego zadania z kolejki.
 - **Wiele par ścieżek w jednym zadaniu:**
   - Definiowanie wielu wektorów źródło &rarr; cel w ramach jednej logicznej jednostki backupu.
-- **Raporty CSV wysłanych i usuniętych plików:**
-  - Generowanie precyzyjnych zestawień CSV (ścieżka, rozmiar, status) dla plików przetransferowanych oraz usuniętych (zarówno po faktycznym wykonaniu, jak i w trybie próbnym *dry-run*).
-  - Niezależna, konfigurowalna retencja raportów CSV (`csvReportRetentionDays`) w Ustawieniach z automatycznym oczyszczaniem plików w `data/files/`.
+- **Raporty CSV wysłanych i usuniętych plików (z rzeczywistego wykonania):**
+  - Generowanie precyzyjnych zestawień CSV bezpośrednio z operacji transferu (pliki wysłane) oraz czyszczenia (pliki usunięte).
+  - **Nowa kolumna "Cel" / "Destination":** raporty zawierają pełną informację o wektorze transferu (`Ścieżka źródłowa` ; `Cel` ; `Rozmiar` ; `Data modyfikacji` ; `Status`).
+  - **Przełącznik języka nagłówków CSV:** wybór nagłówków w języku angielskim (EN - domyślny, maksymalna zgodność) lub polskim (PL) w Ustawieniach.
+  - Spójny format nazewnictwa plików: `<YYYY-MM-DD_HH-mm-ss>_<shortJobId>_sent.csv` oraz `<YYYY-MM-DD_HH-mm-ss>_<shortJobId>_deleted.csv`.
+  - Format UTF-8 z BOM i separatorem średnik (`;`), w pełni czytelny w Microsoft Excel, LibreOffice Calc i arkuszach kalkulacyjnych.
+  - Niezależna, konfigurowalna retencja raportów CSV (`csvReportRetentionDays`) w Ustawieniach z automatycznym oczyszczaniem plików w `data/files/<nrZadania>_<nazwaZadania>/`.
   - Wygodne pobieranie raportów bezpośrednio z poziomu panelu historii i monitora zadań.
+- **Zaawansowane reguły wykluczeń (Exclude Filters):**
+  - Obsługa precyzyjnych masek plików i katalogów dla silników `rsync` i `rclone` (np. `*.tmp`, `/katalog/*.tmp`, `katalog/`, `*_TRASH/`).
+  - Dedykowana dokumentacja i baza przykładów znajduje się w pliku [`EXCLUDE_FILTERS.md`](./EXCLUDE_FILTERS.md).
 - **Bezpieczeństwo operacyjne i zarządzanie sesją:**
   - **Licznik czasu sesji na żywo:** umieszczony na górnym pasku nawigacyjnym (między zmianą hasła a wylogowaniem), z dynamiczną kolorystyką (ostrzeżenie poniżej 5 min, pulsowanie poniżej 2 min).
   - **Auto-wylogowanie i przedłużanie przy aktywności:** konfigurowalny czas bezczynności (30m, 1h, 3h lub brak limitu); każdy ruch, kliknięcie lub akcja automatycznie odnawia sesję w tle (heartbeat), z opcją natychmiastowego odświeżenia kliknięciem w licznik.
@@ -121,8 +130,9 @@ Dla zapewnienia maksymalnej wydajności I/O i niezawodności, SyncVault dzieli d
 1. **`syncvault-db.json`** — Użytkownicy (`users`), zadania (`tasks`), ustawienia globalne (`settings`) i konfiguracja powiadomień.
 2. **`syncvault-history.json`** — Pełna historia wykonań zadań (`history`), kody zakończenia, transferowane bajty, czasy trwania i metadane.
 3. **`syncvault-audit.json`** — Dziennik zdarzeń i operacji audytowych (`auditLogs`), rejestrujący działania użytkowników i systemu.
-4. **`files/` (`/data/files/<taskNumber>_<safeTaskName>/`)** — Wygenerowane raporty CSV (`wyslane_*.csv`, `usuniete_*.csv`) z automatyczną retencją.
+4. **`files/` (`/data/files/<taskNumber>_<safeTaskName>/`)** — Wygenerowane raporty CSV (`*_sent.csv`, `*_deleted.csv`) z automatyczną retencją.
 5. **`logs/` (`/data/logs/<taskNumber>_<safeTaskName>/`)** — Surowe pliki logów procesów rsync/rclone z automatyczną retencją.
+6. **`logs/logs_YYYY-MM-DD.log`** — Codzienne logi systemowe i kontenera Docker.
 
 - **Lokalizacja w kontenerze:** `/data/`
 - **Lokalizacja na hoście:** `./data/` (w katalogu, w którym znajduje się `docker-compose.yml`).
@@ -281,12 +291,13 @@ Przy pierwszym wejściu na stronę SyncVault powita Cię kreator konfiguracji:
    - *Przenieś (Move)* – przenosi pliki ze źródła do celu.
 5. **Zdefiniuj pary ścieżek:** źródło &rarr; cel (możliwość dodania wielu par).
 6. **Filtry, Kosz i Wykluczenia:**
-   - Reguły wykluczeń plików/folderów (np. `*.tmp`, `.git/`, `node_modules/`).
-   - Opcja włączenia Kosza na usuwane pliki.
+   - Reguły wykluczeń plików/folderów (np. `*.tmp`, `.git/`, `node_modules/`, `/dane/*.tmp`).
+   - Szczegółowe zasady i gotowe przykłady filtrów zebrano w pliku [`EXCLUDE_FILTERS.md`](./EXCLUDE_FILTERS.md).
+   - Opcja włączenia Kosza na usuwane pliki (`_TRASH/YYYY-MM-DD`).
    - Indywidualne dni trzymania logów dla tego zadania.
 7. **Powiadomienia i raporty CSV:**
    - Zaznacz kanały dostarczania: Discord Webhook, ntfy.sh, E-mail SMTP.
-   - Wybierz generowanie raportów CSV (wysłane pliki, usunięte pliki).
+   - Wybierz generowanie raportów CSV (wysłane pliki, usunięte pliki) zapisywanych w `data/files/<nrZadania>_<nazwaZadania>/`.
 
 ### 3. Zarządzanie sesją i licznik na pasku nawigacyjnym
 - Pomiędzy przyciskiem zmiany hasła a przyciskiem wylogowania wyświetlany jest zegar wskazujący pozostały czas sesji (np. `29:50`).
@@ -294,10 +305,14 @@ Przy pierwszym wejściu na stronę SyncVault powita Cię kreator konfiguracji:
 - Kliknięcie bezpośrednio w sam licznik wysyła natychmiastowe odświeżenie sesji.
 - Czas trwania sesji można dostosować w **Ustawienia &rarr; Parametry wykonania i limity** (30 min, 1 godz., 3 godz., lub brak limitu z określoną liczbą dni).
 
-### 4. Retencja logów i raportów CSV
+### 4. Parametry wykonania, retencja i kolejkowanie
 W sekcji **Ustawienia &rarr; Parametry wykonania i limity**:
+- **Maksymalna liczba zadań w tle:** limit jednoczesnych procesów (nadmiarowe zadania czekają w kolejce FIFO).
+- **Odstęp przed kolejnym zadaniem (`queueStartDelaySeconds`):** konfigurowalny czas odczekania (np. 5 sek.) po zakończeniu zadania przed startem następnego z kolejki (kolejkowanie łańcuchowe, uruchomienie ręczne lub harmonogram).
 - **Domyślna retencja logów (dni):** automatyczne usuwanie starych wpisów historii oraz plików `.log` z dysku.
 - **Retencja raportów CSV (dni):** niezależny limit dni przechowywania wygenerowanych zestawień CSV w katalogu `data/files/`.
+- **Język nagłówków raportów CSV:** wybór pomiędzy `Angielski (EN)` (domyślny: `"Name (full path)";"Destination";"Size";"Modified (mtime)";"Status"`) a `Polski (PL)` (`"Nazwa (pełna ścieżka)";"Cel";"Waga";"Data modyfikacji (mtime)";"Status"`).
+- **Retencja i limit wpisów Audit Log:** automatyczne rotowanie wpisów dziennika audytu (wg dni oraz maksymalnego limitu liczby zdarzeń).
 
 ### 5. Przywracanie danych (Restore)
 W razie awarii lub utraty plików kliknij **Przywróć** przy wybranym zadaniu:

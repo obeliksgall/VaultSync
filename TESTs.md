@@ -16,7 +16,7 @@ Każdy przypadek testowy składa się z:
 2. [Uwierzytelnianie, Bezpieczeństwo i Zarządzanie Sesją](#2-uwierzytelnianie-bezpieczeństwo-i-zarządzanie-sesją)
 3. [Zarządzanie Użytkownikami i Uprawnienia (RBAC)](#3-zarządzanie-użytkownikami-i-uprawnienia-rbac)
 4. [Tworzenie i Konfiguracja Zadania Synchronizacji](#4-tworzenie-i-konfiguracja-zadania-synchronizacji)
-5. [Przed-wykonawcze Raporty CSV (Dry-Run: Wysłane / Usunięte)](#5-przed-wykonawcze-raporty-csv-dry-run-wysłane--usunięte)
+5. [Raporty CSV z Wykonania Zadań (Wysłane / Usunięte Pliki)](#5-raporty-csv-z-wykonania-zadań-wysłane--usunięte-pliki)
 6. [Ręczne Uruchomienie i Monitor Zadań (Job Monitor)](#6-ręczne-uruchomienie-i-monitor-zadań-job-monitor)
 7. [Wielokrotne Harmonogramy Automatyczne (Multi-CRON Daemon)](#7-wielokrotne-harmonogramy-automatyczne-multi-cron-daemon)
 8. [Procedura Przywracania Awaryjnego (Disaster Recovery / Restore)](#8-procedura-przywracania-awaryjnego-disaster-recovery--restore)
@@ -162,10 +162,11 @@ Każdy przypadek testowy składa się z:
 ### TEST-10: Zaawansowane filtry wykluczeń (Exclude) i Kosz (Trash)
 * **Co zrobić:**
   1. W edycji zadania przejdź do zakładki "Zaawansowane / Opcje".
-  2. W sekcji "Wykluczenia katalogów / plików (exclude)" dodaj reguły:
-     - `*.tmp`
-     - `.git/`
-     - `node_modules/`
+  2. W sekcji "Wykluczenia katalogów / plików (exclude)" przetestuj wzorce zgodnie z dokumentem `EXCLUDE_FILTERS.md`:
+     - `*.tmp` (wszystkie pliki tymczasowe)
+     - `/pliki1/*.tmp2` (pliki .tmp2 tylko w katalogu głównym /pliki1/)
+     - `**/temp5*/**` lub `*temp5*` (katalogi zawierające w nazwie temp5)
+     - `.git/` oraz `node_modules/`
   3. W sekcji "Kosz (Trash)" zaznacz "Włącz wersjonowanie / kosz dla usuwanych plików".
   4. Ustaw liczbę dni retencji kosza: `14`.
 * **Co sprawdzić:**
@@ -177,9 +178,9 @@ Każdy przypadek testowy składa się z:
 ### TEST-11: Konfiguracja raportów CSV i transliteracji powiadomień
 * **Co zrobić:**
   1. W oknie edycji zadania przejdź do zakładki "Powiadomienia i Raporty".
-  2. W ramce "Generowanie plików CSV (przed uruchomieniem - dry-run)" zaznacz:
-     - [x] **Wysłane** (Plik CSV z wysyłanymi plikami)
-     - [x] **Usunięte** (Plik CSV z usuwanymi plikami)
+  2. W ramce "Generowanie plików CSV (z wykonania zadania)" zaznacz:
+     - [x] **Wysłane** (Plik CSV z wysłanymi plikami)
+     - [x] **Usunięte** (Plik CSV z usuniętymi plikami)
   3. W ramce "Kanały powiadomień" zaznacz Discord i E-mail.
   4. Wprowadź polskie znaki w polach (np. `Kopia zapasowa: żółć, gęślą jaźń`).
 * **Co sprawdzić:**
@@ -190,32 +191,39 @@ Każdy przypadek testowy składa się z:
 
 ---
 
-## 5. Przed-wykonawcze Raporty CSV (Dry-Run: Wysłane / Usunięte)
+## 5. Raporty CSV z Wykonania Zadań (Wysłane / Usunięte Pliki)
 
-### TEST-12: Generowanie i podgląd raportu przy braku zmian / nowych plikach
+### TEST-12: Generowanie i podgląd raportu z wykonania zadania
 * **Co zrobić:**
   1. Przygotuj w folderze źródłowym pliki testowe (np. 4 pliki tekstowe). Folder docelowy pozostaw pusty.
   2. Uruchom zadanie z włączonym generowaniem raportów CSV.
-  3. Po uruchomieniu kliknij zieloną ikonę arkusza kalkulacyjnego (`FileSpreadsheet`) w wierszu zadania.
+  3. Po pomyślnym wykonaniu kliknij zieloną ikonę arkusza kalkulacyjnego (`FileSpreadsheet`) w wierszu zadania.
 * **Co sprawdzić:**
-  - Czy w oknie "Raporty CSV z wykonania zadań" widoczna jest **jedna spójna sekcja** dla danego uruchomienia (np. `2026-09-22 17:30:15`).
-  - Czy raport Wysłanych zawiera dokładnie 4 dodane pliki ze statusem `OK`.
-  - Czy raport Usuniętych wskazuje brak plików do usunięcia (lub pustą listę / odpowiedni status, bez generowania fikcyjnych/losowych wpisów).
+  - Czy w oknie "Raporty CSV z wykonania zadań" widoczna jest **jedna spójna sekcja** dla danego uruchomienia (np. `2026-09-24 17:30:15`).
+  - Czy wygenerowane pliki posiadają nazwy wg konwencji: `<YYYY-MM-DD_HH-mm-ss>_<shortJobId>_sent.csv` oraz `_deleted.csv`.
+  - Czy raport Wysłanych zawiera dokładnie 4 przetransferowane pliki ze statusem `OK`.
+  - Czy raport Usuniętych wskazuje brak plików do usunięcia (lub pustą listę / brak nieistniejących wpisów).
 * **Oczekiwany rezultat:**
-  Sekcja pojedynczego uruchomienia grupuje zarówno plik wysłanych jak i usuniętych. Raport odzwierciedla faktyczny stan dysku.
+  Sekcja pojedynczego uruchomienia grupuje pliki raportu z rzeczywistego wykonania.
 
-### TEST-13: Weryfikacja formatu pliku CSV i pobieranie ZIP
+### TEST-13: Weryfikacja formatu CSV, nowej kolumny "Cel" i przełącznika języka nagłówków
 * **Co zrobić:**
   1. W oknie raportów CSV kliknij przycisk "Pobierz plik CSV" dla wysłanych.
   2. Następnie kliknij "Pobierz oba raporty (ZIP)".
   3. Otwórz pobrany plik CSV w arkuszu (Excel / LibreOffice Calc) lub edytorze tekstu.
+  4. Przejdź do **Ustawienia &rarr; Parametry wykonania i limity &rarr; Język nagłówków raportów CSV**:
+     - Przetestuj ustawienie domyślne: `Angielski (EN)`.
+     - Przełącz na `Polski (PL)`, uruchom ponowny transfer i pobierz nowy raport CSV.
 * **Co sprawdzić:**
   - Czy separatorem kolumn jest średnik `;`.
-  - Czy plik posiada nagłówki: `"Nazwa (pełna ścieżka)";"Waga";"Data modyfikacji (mtime)";"Status"`.
+  - Czy plik posiada 5 kolumn wraz z **kolumną Celu / Miejsca docelowego**:
+    - Przy języku EN (domyślny): `"Name (full path)";"Destination";"Size";"Modified (mtime)";"Status"`.
+    - Przy języku PL: `"Nazwa (pełna ścieżka)";"Cel";"Waga";"Data modyfikacji (mtime)";"Status"`.
+  - Czy w kolumnie "Cel" / "Destination" widnieje poprawna ścieżka docelowa dla danej pary ścieżek zadania.
   - Czy wagi plików są sformatowane czytelnie z dokładną liczbą bajtów (np. `10.02 KB (10256 B)`).
-  - Czy archiwum ZIP zawiera oba pliki CSV z poprawnymi nazwami zawierającymi datę i identyfikator.
+  - Czy archiwum ZIP zawiera pliki CSV z poprawnymi nazwami zawierającymi datę i identyfikator.
 * **Oczekiwany rezultat:**
-  Poprawny format CSV, brak problemów z polskimi znakami diakrytycznymi (UTF-8 z BOM), sprawne pakowanie do ZIP.
+  Poprawny format CSV z kolumną Celu, brak problemów z polskimi znakami diakrytycznymi (UTF-8 z BOM), działający przełącznik języka nagłówków.
 
 ### TEST-14: Paginacja raportów CSV (5 uruchomień na stronę)
 * **Co zrobić:**
@@ -243,6 +251,18 @@ Każdy przypadek testowy składa się z:
   - Czy plik bazy `syncvault-history.json` nie zawiera już osieroconych rekordów skasowanego zadania.
 * **Oczekiwany rezultat:**
   Skasowanie zadania całkowicie zwalnia zasoby dyskowe (katalogi logów i plików raportów) oraz usuwa całą historię wykonania i pozycje w monitorze zadań – nie pozostawia żadnych osieroconych danych.
+
+### TEST-14c: Inteligentna numeracja zadań (#ID) i brak luk przy usuwaniu zadania
+* **Co zrobić:**
+  1. Sprawdź numer ostatniego zadania (np. zadanie `#20`).
+  2. Kliknij "Duplikuj" lub "+ Nowe zadanie" – nowe zadanie otrzymuje kolejny numer: `#21`.
+  3. Usuń zadanie `#21` za pomocą ikony kosza.
+  4. Kliknij "+ Nowe zadanie" lub "Duplikuj" inne zadanie.
+* **Co sprawdzić:**
+  - Czy po usunięciu zadania `#21` licznik w bazie danych cofa się do wartości najwyższego istniejącego zadania (`#20`).
+  - Czy nowo utworzone zadanie otrzymuje ponownie numer `#21` (zamiast przeskakiwać na `#22`).
+* **Oczekiwany rezultat:**
+  Brak powstawania sztucznych luk w numeracji zadań po usunięciu ostatniego/najwyższego zadania.
 
 ---
 
@@ -379,9 +399,21 @@ Każdy przypadek testowy składa się z:
 * **Co sprawdzić:**
   - Czy pierwsze zadanie przechodzi w stan aktywny (`running`).
   - Czy drugie zadanie przechodzi w stan oczekiwania w kolejce (`queued`).
-  - Czy po ukończeniu pierwszego zadania, drugie zadanie natychmiast automatycznie rozpoczyna transfer.
+  - Czy po ukończeniu pierwszego zadania, drugie zadanie rozpoczyna transfer po uwzględnieniu bufora odstępu.
 * **Oczekiwany rezultat:**
   Kolejkowanie FIFO zapobiega przeciążeniu dysków i łącza sieciowego.
+
+### TEST-24b: Odstęp czasowy przed startem kolejnego zadania z kolejki (Queue Start Delay)
+* **Co zrobić:**
+  1. W "Ustawienia" -> "Parametry wykonania i limity" ustaw "Odstęp przed kolejnym zadaniem" na `5` sekund (lub skonfiguruj parametr `queueStartDelaySeconds`).
+  2. Uruchom zadanie, a następnie kolejne zadanie (lub skonfiguruj chaining "Uruchom po zakończeniu").
+  3. Po zakończeniu pierwszego zadania obserwuj stan drugiego zadania w Monitorze Zadań (Job Monitor).
+* **Co sprawdzić:**
+  - Czy w kafelku oczekującego zadania wyświetla się żółty wskaźnik/odliczanie bufora: `Oczekiwanie na start (odstęp: 5s, 4s, 3s...)`.
+  - Czy kolejne zadanie nie startuje w ułamku sekundy, lecz odczekuje zdefiniowane 5 sekund dając dyskom/chmurze czas na zwolnienie blokad (breather).
+  - Czy po upływie odliczanego czasu zadanie płynnie przechodzi w stan aktywny (`running`).
+* **Oczekiwany rezultat:**
+  Precyzyjne i wizualnie czytelne odliczanie bufora bezpieczeństwa między kolejkowanymi zadaniami.
 
 ### TEST-25: Test powiadomień zewnętrznych (Discord, ntfy.sh, E-mail)
 * **Co zrobić:**
@@ -481,4 +513,4 @@ Każdy przypadek testowy składa się z:
 
 ## Podsumowanie Procedury Odbiorczej
 
-Zaliczenie powyższych 30 scenariuszy testowych gwarantuje 100% gotowości wdrożeniowej instancji **SyncVault** do produkcyjnego zabezpieczania zasobów danych w infrastrukturze lokalnej, NAS oraz chmurowej.
+Zaliczenie powyższych 32 scenariuszy testowych gwarantuje 100% gotowości wdrożeniowej instancji **SyncVault** do produkcyjnego zabezpieczania zasobów danych w infrastrukturze lokalnej, NAS oraz chmurowej.

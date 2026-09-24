@@ -89,47 +89,125 @@ Bez autoryzacji (część danych ujawniana jest niezależnie od loginu — statu
 
 | Metoda | Ścieżka | Auth | Opis |
 |---|---|---|---|
-| GET | `/api/tasks` | user | Lista zadań |
-| GET | `/api/tasks/:id` | user | Szczegóły zadania |
-| POST | `/api/tasks` | admin | Nowe zadanie |
-| PUT | `/api/tasks/:id` | admin | Edycja zadania |
-| DELETE | `/api/tasks/:id` | admin | Usunięcie zadania (kasuje też jego logi/pliki) |
-| POST | `/api/tasks/:id/duplicate` | admin | Duplikat zadania |
-| POST | `/api/tasks/preview-command` | user | Podgląd komendy rsync/rclone |
-| POST | `/api/tasks/:id/run` | user | Uruchomienie zadania |
-| POST | `/api/tasks/:id/restore` | user | Przywracanie (disaster recovery) |
-| GET | `/api/tasks/:id/files` | user | Lista wygenerowanych raportów CSV |
-| GET | `/api/tasks/:id/files/download` | user | Pobranie raportu CSV |
+| GET | `/api/tasks` | user | Lista wszystkich zdefiniowanych zadań |
+| GET | `/api/tasks/:id` | user | Szczegóły pojedynczego zadania |
+| POST | `/api/tasks` | admin | Utworzenie nowego zadania (automatyczne nadanie unikalnego `taskNumber`) |
+| PUT | `/api/tasks/:id` | admin | Edycja zadania (zablokowana gdy zadanie jest w trakcie pracy lub w kolejce) |
+| DELETE | `/api/tasks/:id` | admin | Usunięcie zadania (anuluje aktywne procesy, kasuje logi, pliki CSV i historię) |
+| POST | `/api/tasks/:id/duplicate` | admin | Zduplikowanie zadania z nową unikalną nazwą i nowym numerem ID |
+| POST | `/api/tasks/preview-command` | user | Podgląd wygenerowanej komendy rsync/rclone |
+| POST | `/api/tasks/:id/run` | user | Ręczne uruchomienie zadania backupu |
+| POST | `/api/tasks/:id/restore` | user | Awaryjne przywrócenie danych (Disaster Recovery) |
+| GET | `/api/tasks/:id/files` | user | Lista wygenerowanych raportów CSV w katalogu `data/files/<nr>_<nazwa>/` |
+| GET | `/api/tasks/:id/files/download?file=<nazwa>` | user | Pobranie wskazanego pliku CSV |
+
+### Numeracja zadań (`taskNumber`)
+Każde zadanie posiada czytelny identyfikator numeryczny (`#1`, `#2`, `#3`...).
+- Przy tworzeniu zadania (`POST /api/tasks` lub `/duplicate`) system automatycznie przydziela kolejny unikalny numer (`maxExisting + 1`).
+- **Inteligentne cofanie licznika:** Jeśli usunięto zadanie o najwyższym numerze (np. omyłkowo utworzone zadanie `#21`), licznik bazy danych automatycznie cofa się do wartości najwyższego z pozostałych zadań (`#20`). Kolejne nowo utworzone zadanie bez luk otrzyma zwolniony numer (`#21`).
+
+---
+
+## Raporty CSV z wykonania zadań
+
+Aplikacja generuje raporty CSV bezpośrednio z operacji transferu oraz usuwania plików podczas każdego uruchomienia.
+
+- **Lokalizacja na dysku:** `/data/files/<taskNumber>_<safeTaskName>/`
+- **Konwencja nazw:**
+  - Wysłane pliki: `<YYYY-MM-DD_HH-mm-ss>_<shortJobId>_sent.csv`
+  - Usunięte pliki: `<YYYY-MM-DD_HH-mm-ss>_<shortJobId>_deleted.csv`
+- **Format:** CSV rozdzielany średnikiem (`;`), kodowanie **UTF-8 z BOM** (zapewnia bezbłędne otwieranie w Microsoft Excel i LibreOffice z obsługą polskich znaków).
+- **Kolumny (w zależności od ustawienia `csvHeaderLanguage`):**
+  - **Angielski (EN - domyślny):**
+    `"Name (full path)";"Destination";"Size";"Modified (mtime)";"Status"`
+  - **Polski (PL):**
+    `"Nazwa (pełna ścieżka)";"Cel";"Waga";"Data modyfikacji (mtime)";"Status"`
+- **Kolumna "Cel" / "Destination":** wskazuje konkretną ścieżkę lub katalog docelowy danej pary ścieżek zadania.
+
+### Endpointy raportów CSV:
+- `GET /api/tasks/:id/files` — zwraca tablicę obiektów:
+  ```json
+  [
+    {
+      "filename": "2026-09-24_17-30-00_a1b2c3d4_sent.csv",
+      "filePath": "files/21_Kopia_NAS/2026-09-24_17-30-00_a1b2c3d4_sent.csv",
+      "type": "sent",
+      "size": 1420,
+      "createdAt": "2026-09-24T15:30:00.000Z"
+    }
+  ]
+  ```
+- `GET /api/tasks/:id/files/download?file=<filename>` — bezpośrednie pobranie pliku CSV z nagłówkiem `Content-Disposition: attachment`.
+- `GET /api/jobs/:id/csv/:type` — pobranie raportu dla konkretnego zadania (`:type` to `sent` lub `deleted`).
+
+---
 
 ## Zadania w toku / historia
 
 | Metoda | Ścieżka | Auth | Opis |
 |---|---|---|---|
-| GET | `/api/jobs` | user | Aktywne/kolejkowane zadania (Job Monitor) |
-| POST | `/api/jobs/:id/stop` | user | Zatrzymanie zadania |
-| GET | `/api/jobs/:id/logs` | user | Strumień logów zadania |
-| GET | `/api/jobs/:id/download-log` | user | Pobranie pliku logu |
-| GET | `/api/jobs/:id/csv/:type` | user | Pobranie CSV (wyslane/usuniete) dla joba |
-| GET | `/api/history` | user | Historia wykonań |
+| GET | `/api/jobs` | user | Aktywne i oczekujące zadania (Job Monitor, domyślny limit konfigurowalny) |
+| POST | `/api/jobs/:id/stop` | user | Natychmiastowe zatrzymanie / przerwanie procesu zadania |
+| GET | `/api/jobs/:id/logs` | user | Strumień logów zadania (stdout/stderr procesu) |
+| GET | `/api/jobs/:id/download-log` | user | Pobranie pliku logu (`.log`) danego wykonania |
+| GET | `/api/jobs/:id/csv/:type` | user | Pobranie raportu CSV (`sent` lub `deleted`) dla joba |
+| GET | `/api/history` | user | Pełna historia wykonań zadań (opcjonalny parametr `?limit=N`) |
+
+---
 
 ## System / logi
 
 | Metoda | Ścieżka | Auth | Opis |
 |---|---|---|---|
-| GET | `/api/system/logs` | user | Lista/treść logów serwera (`/data/logs/logs_YYYY-MM-DD.log`) |
-| GET | `/api/system/logs/download` | user | Pobranie pliku logu serwera |
-| GET | `/api/fs/browse` | user | Przeglądarka katalogów (do wyboru ścieżek source/destination) |
+| GET | `/api/system/logs` | user | Treść logów serwera/kontenera Docker (opcjonalny parametr `?date=YYYY-MM-DD`) |
+| GET | `/api/system/logs/download` | user | Pobranie pliku dziennego logu (`/data/logs/logs_YYYY-MM-DD.log`) |
+| GET | `/api/fs/browse` | user | Przeglądarka systemu plików kontenera (`?path=/ścieżka`) do wyboru folderów |
+
+---
 
 ## Rclone / Ustawienia / Audyt
 
 | Metoda | Ścieżka | Auth | Opis |
 |---|---|---|---|
-| GET/POST | `/api/rclone/config` | admin | Odczyt/zapis `rclone.conf` |
-| GET | `/api/settings` | user | Ustawienia globalne |
-| PUT | `/api/settings` | admin | Aktualizacja ustawień |
-| POST | `/api/settings/test-notification` | admin | Test powiadomienia (Discord/ntfy/SMTP) |
-| GET | `/api/audit` | admin | Dziennik audytu |
-| POST | `/api/audit/clear` | admin | Czyszczenie dziennika audytu |
+| GET/POST | `/api/rclone/config` | admin | Odczyt i zapis konfiguracji zdalnych zasobów chmurowych `rclone.conf` |
+| GET | `/api/settings` | user | Odczyt parametrów globalnych systemu |
+| PUT | `/api/settings` | admin | Aktualizacja ustawień globalnych (wymusza też czyszczenie retencyjne CSV) |
+| POST | `/api/settings/test-notification` | admin | Test wysyłki powiadomienia (`{"type":"discord"|"ntfy"|"email"}`) |
+| GET | `/api/audit` | admin | Dziennik audytu operacji administracyjnych i systemowych |
+| POST | `/api/audit/clear` | admin | Wyczyszczenie historii dziennika audytu |
+
+### Kluczowe pola w `/api/settings`:
+```json
+{
+  "maxConcurrentJobs": 2,
+  "queueStartDelaySeconds": 5,
+  "jobMonitorLimit": 25,
+  "historyLimit": 250,
+  "defaultLogRetentionDays": 30,
+  "defaultTrashRetentionDays": 14,
+  "csvReportRetentionDays": 7,
+  "csvHeaderLanguage": "en",
+  "auditLogRetentionDays": 30,
+  "auditLogMaxEntries": 2000,
+  "autoLogoutTimeout": "30m",
+  "unlimitedDays": 7,
+  "theme": "dark",
+  "language": "pl",
+  "notifications": {
+    "discordWebhookUrl": "...",
+    "ntfyUrl": "...",
+    "smtpHost": "...",
+    "smtpPort": 587,
+    "smtpUser": "...",
+    "smtpPass": "...",
+    "smtpFrom": "...",
+    "notifyEmailTo": "..."
+  }
+}
+```
+- **`queueStartDelaySeconds`**: liczba sekund odstępu (bufora) po zakończeniu zadania, zanim ruszy kolejne zadanie oczekujące w kolejce (domyślnie `5`, `0` = natychmiast).
+- **`csvReportRetentionDays`**: liczba dni retencji plików CSV w `/data/files/` (`0` = bez usuwania).
+- **`csvHeaderLanguage`**: `'en'` (domyślny angielski) lub `'pl'` (polskie nagłówki kolumn w CSV).
 
 ## Kopia zapasowa konfiguracji (.svb)
 
