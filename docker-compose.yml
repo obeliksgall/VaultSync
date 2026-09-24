@@ -1,0 +1,41 @@
+services:
+  syncvault:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: syncvault:latest
+    container_name: syncvault
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - TZ=Europe/Warsaw
+      - DATA_DIR=/data
+      - RCLONE_CONFIG=/data/rclone.conf
+      - RCLONE_CONFIG_PATH=/data/rclone.conf
+      - MAX_CONCURRENT_JOBS=2
+      # Opcjonalne notyfikacje środowiskowe (można również skonfigurować w Web UI):
+      - DISCORD_WEBHOOK_URL=
+      - NTFY_URL=
+      - SMTP_HOST=
+      - SMTP_PORT=587
+      - SMTP_USER=
+      - SMTP_PASS=
+      - SMTP_FROM=syncvault@localhost
+      - NOTIFY_EMAIL_TO=
+    volumes:
+      # 1. Trwały wolumen na bazę danych (syncvault-db.json), rclone.conf oraz logi:
+      - ./data:/data
+
+      # 2. Przykładowe zasoby do synchronizacji (Linux):
+      - /mnt/storage:/source:ro
+      - /mnt/backups:/destination
+
+      # 3. Przykładowe zasoby do synchronizacji (Windows Docker Desktop - odkomentuj wg potrzeb):
+      # - C:/Users/Public/Documents:/source:ro
+      # - D:/Backups/SyncVault:/destination
+
+      # 4. Opcjonalnie: bezpośrednie podmontowanie pliku rclone z systemu hosta:
+      # - ~/.config/rclone/rclone.conf:/data/rclone.conf:ro
+

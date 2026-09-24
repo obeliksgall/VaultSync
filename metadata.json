@@ -1,0 +1,6 @@
+{
+  "name": "SyncVault Backup & Restore",
+  "description": "Docker container web app for backup and restore automation using rsync and rclone with live job monitoring, scheduling, and notifications.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
