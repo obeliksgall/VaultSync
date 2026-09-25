@@ -25,6 +25,8 @@ Każdy przypadek testowy składa się z:
 11. [Dziennik Audytu (Audit Log)](#11-dziennik-audytu-audit-log)
 12. [Szyfrowany Eksport i Import Konfiguracji (AES-256-GCM)](#12-szyfrowany-eksport-i-import-konfiguracji-aes-256-gcm)
 13. [Weryfikacja Trybu Ciemnego i Interfejsu (Dark Mode & UI)](#13-weryfikacja-trybu-ciemnego-i-interfejsu-dark-mode--ui)
+14. [Logi Systemowe Kontenera Docker i Retencja (Docker System Logs)](#14-logi-systemowe-kontenera-docker-i-retencja-docker-system-logs)
+15. [Automatyczne Kopie Bezpieczeństwa Bazy Danych (/data/backupdb/)](#15-automatyczne-kopie-bezpieczeństwa-bazy-danych-databackupdb)
 
 ---
 
@@ -511,6 +513,26 @@ Każdy przypadek testowy składa się z:
 
 ---
 
+## 15. Automatyczne Kopie Bezpieczeństwa Bazy Danych (/data/backupdb/)
+
+### TEST-31: Tworzenie kopii bazy przed zapisem i polityka retencji (min. 14 kopii)
+* **Co zrobić:**
+  1. Wejdź do "Ustawienia" -> "Kopia & Docker" -> Sekcja "Automatyczne kopie bezpieczeństwa bazy danych (/data/backupdb/)".
+  2. Sprawdź wartości: retencja w dniach (`14`) oraz minimalna liczba kopii (`14`).
+  3. Dokonaj dowolnej zmiany w aplikacji (np. edycja zadania, zmiana ustawienia lub utworzenie użytkownika).
+  4. Wróć do zakładki "Kopia & Docker" i kliknij "Odśwież listę" w sekcji kopii bazy.
+  5. Sprawdź zawartość katalogu `/data/backupdb/` na dysku/w kontenerze.
+  6. Kliknij przycisk "Pobierz .json" przy najnowszej kopii.
+* **Co sprawdzić:**
+  - Czy przed nadpisaniem pliku `syncvault-db.json` w folderze `/data/backupdb/` utworzyła się migawka `syncvault-db_YYYY-MM-DD_HH-mm-ss.json`.
+  - Czy plik zawiera pełny, poprawny zrzut konfiguracji JSON sprzed zmiany.
+  - Czy system respektuje zasadę ochrony: nawet po przekroczeniu 14 dni starsze pliki nie zostaną skasowane, jeśli łączna liczba kopii wynosi 14 lub mniej.
+  - Czy pobierany plik JSON pobiera się bez błędów przez przeglądarkę.
+* **Oczekiwany rezultat:**
+  Automatyczne, bezobsługowe wersjonowanie stanu bazy danych przed każdym zapisem zabezpiecza użytkownika przed przypadkową utratą konfiguracji.
+
+---
+
 ## Podsumowanie Procedury Odbiorczej
 
-Zaliczenie powyższych 32 scenariuszy testowych gwarantuje 100% gotowości wdrożeniowej instancji **SyncVault** do produkcyjnego zabezpieczania zasobów danych w infrastrukturze lokalnej, NAS oraz chmurowej.
+Zaliczenie powyższych 33 scenariuszy testowych gwarantuje 100% gotowości wdrożeniowej instancji **SyncVault** do produkcyjnego zabezpieczania zasobów danych w infrastrukturze lokalnej, NAS oraz chmurowej.

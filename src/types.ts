@@ -151,6 +151,8 @@ export interface GlobalSettings {
   defaultTrashRetentionDays: number;
   csvReportRetentionDays?: number; // Retention limit in days for CSV report files in data/files (0 = unlimited, default matches history/logs retention)
   csvHeaderLanguage?: 'en' | 'pl'; // 'en' (default) | 'pl'
+  dbBackupRetentionDays?: number; // Czas przechowywania automatycznych kopii bazy danych syncvault-db.json w data/backupdb/ w dniach (domyślnie 14)
+  dbBackupMinCopies?: number; // Minimalna liczba zachowywanych kopii bazy danych w data/backupdb/ (domyślnie 14, nigdy nie usuwa poniżej tej liczby)
   auditLogRetentionDays?: number; // 0 = unlimited, e.g. 7, 14, 30, 90, 180, 365
   auditLogMaxEntries?: number; // hard cap on stored audit log entries; 100 | 250 | 500 | 1000 | 2000 | 5000
   autoLogoutTimeout?: AutoLogoutTimeout; // '30m' | '1h' | '3h' | 'unlimited' (default: '30m')
@@ -166,6 +168,13 @@ export interface FsItem {
   isDirectory: boolean;
   size?: number;
   mtime?: string;
+}
+
+export interface DbBackupFile {
+  filename: string;
+  size: number;
+  createdAt: string;
+  filePath: string;
 }
 
 export interface FsBrowseResult {

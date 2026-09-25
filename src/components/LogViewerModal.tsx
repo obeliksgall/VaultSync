@@ -77,13 +77,39 @@ export const LogViewerModal: React.FC<LogViewerModalProps> = ({
 
   const handleDownloadOneDriveReport = () => {
     if (!job.oneDriveLongPaths || job.oneDriveLongPaths.length === 0) return;
-    const content = `SyncVault OneDrive 400-Char Limit Report\nTask: ${job.taskName}\nJob ID: ${job.id}\nDate: ${new Date().toISOString()}\nTotal skipped paths: ${job.oneDriveLongPaths.length}\n\n` +
-      job.oneDriveLongPaths.map((p, i) => `${i + 1}. [Length: ${p.length}] ${p}`).join('\n');
+    const token = getAuthToken();
+    if (token && job.id) {
+      const downloadUrl = api.getOneDriveReportDownloadUrl(job.id);
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = `onedrive_400char_skipped_${job.id}.txt`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      return;
+    }
+
+    const content =
+      `================================================================================\n` +
+      `SyncVault - Raport plików pominiętych z powodu limitu 400 znaków OneDrive\n` +
+      `================================================================================\n` +
+      `Zadanie: ${job.taskName}\n` +
+      `Job ID: ${job.id}\n` +
+      `Data wykonania: ${new Date(job.startTime).toLocaleString(lang === 'pl' ? 'pl-PL' : 'en-US')}\n` +
+      `Liczba pominiętych plików: ${job.oneDriveLongPaths.length}\n\n` +
+      `UWAGA: Microsoft OneDrive oraz SharePoint narzucają sztywny limit maksymalnie 400 znaków\n` +
+      `dla pełnej ścieżki URL pliku i katalogu. W przypadku użycia szyfrowania rclone (crypt)\n` +
+      `ścieżki są kodowane i ulegają wydłużeniu o ok. 1.6x, co powoduje odrzucenie pliku przez chmurę.\n\n` +
+      `Lista pominiętych plików:\n` +
+      `--------------------------------------------------------------------------------\n` +
+      job.oneDriveLongPaths.map((p, i) => `${i + 1}. [Długość: ${p.length} zn.] ${p}`).join('\n') +
+      `\n--------------------------------------------------------------------------------\n`;
+
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `onedrive_skipped_paths_${job.taskName}.txt`;
+    link.download = `onedrive_400char_skipped_${job.id}.txt`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);

@@ -15,6 +15,7 @@ import {
   getTaskById,
   saveDatabase,
   getRcloneConfigPath,
+  cleanupDatabaseBackups,
 } from './db.js';
 import { sendJobNotifications } from './notifications.js';
 import {
@@ -76,6 +77,8 @@ interface ActiveJobContext {
   liveDeletedItems: CsvReportItem[];
   liveSentMap: Map<string, CsvReportItem>;
   liveDeletedMap: Map<string, CsvReportItem>;
+  currentPairHadOneDriveLimitError?: boolean;
+  oneDriveLongPathsSet?: Set<string>;
 }
 
 function parseFormattedSizeToBytes(numStr: string, unitStr?: string): number {
@@ -398,18 +401,23 @@ export function enqueueTask(
 
   const previews = generateCommandPreview(task, mode, restoredPairIds);
   const now = new Date();
-  const dateStr = now.toISOString().replace(/[:T]/g, '-').slice(0, 16);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const dateStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
   const taskIdentifier = task.taskNumber ? `${task.taskNumber}` : task.id.slice(0, 8);
   const safeTaskName = task.name.replace(/[^a-zA-Z0-9_-]/g, '_');
   const logDirName = `${taskIdentifier}_${safeTaskName}`;
-  const logFileName = mode === 'restore' ? `${dateStr}_RESTORE.log` : `${dateStr}.log`;
+  let logFileName = mode === 'restore' ? `${dateStr}_RESTORE.log` : `${dateStr}.log`;
   const taskLogsDir = path.join(getLogsDir(), logDirName);
 
   if (!fs.existsSync(taskLogsDir)) {
     fs.mkdirSync(taskLogsDir, { recursive: true });
   }
 
-  const logFilePath = path.join(taskLogsDir, logFileName);
+  let logFilePath = path.join(taskLogsDir, logFileName);
+  if (fs.existsSync(logFilePath)) {
+    logFileName = mode === 'restore' ? `${dateStr}_${now.getMilliseconds()}_RESTORE.log` : `${dateStr}_${now.getMilliseconds()}.log`;
+    logFilePath = path.join(taskLogsDir, logFileName);
+  }
 
   const job: JobExecution = {
     id: crypto.randomUUID(),
@@ -503,6 +511,8 @@ function runJob(job: JobExecution, task: Task, selectedPairIds?: string[]): void
     liveDeletedItems: [],
     liveSentMap: new Map(),
     liveDeletedMap: new Map(),
+    currentPairHadOneDriveLimitError: false,
+    oneDriveLongPathsSet: new Set(job.oneDriveLongPaths || []),
   };
 
   activeJobs.set(job.id, ctx);
@@ -534,6 +544,18 @@ function executeRealJob(ctx: ActiveJobContext, selectedPairIds?: string[]): void
     }
 
     ctx.currentPairIdx = pairSeqIndex;
+    ctx.currentPairHadOneDriveLimitError = false;
+    ctx.currentPairMetrics = {
+      filesTransferred: 0,
+      filesTotal: 0,
+      bytesTransferred: 0,
+      bytesTotal: 0,
+      checksChecked: 0,
+      checksTotal: 0,
+      speed: '0 B/s',
+      eta: '--:--',
+      percentage: 0,
+    };
     const pair = pairs[pairSeqIndex];
     pairSeqIndex++;
 
@@ -635,13 +657,14 @@ function executeRealJob(ctx: ActiveJobContext, selectedPairIds?: string[]): void
       proc.stdout.on('data', chunk => {
         const str = chunk.toString();
         fs.appendFileSync(logFilePath, str);
+        checkOneDriveLongPathError(ctx, str);
         parseRealOutputProgress(ctx, str);
         parseLiveTransferredFiles(ctx, str);
       });
 
       proc.stderr.on('data', chunk => {
         const str = chunk.toString();
-        const hasStandardLog = /Transferred:|Checks:|INFO\s*:|NOTICE\s*:|Elapsed time:/i.test(str);
+        const hasStandardLog = /Transferred:|Checks:|INFO\s*:|NOTICE\s*:|ERROR\s*:|Elapsed time:/i.test(str);
         if (hasStandardLog) {
           fs.appendFileSync(logFilePath, str);
         } else {
@@ -654,9 +677,21 @@ function executeRealJob(ctx: ActiveJobContext, selectedPairIds?: string[]): void
 
       proc.on('close', code => {
         if (ctx.cancelled) return;
-        if (code === 0) {
+        const hadOneDriveLimitError = Boolean(
+          ctx.currentPairHadOneDriveLimitError ||
+          (ctx.job.oneDriveLongPaths && ctx.job.oneDriveLongPaths.length > 0)
+        );
+
+        if (code === 0 || hadOneDriveLimitError) {
           ctx.currentPairMetrics.percentage = 100;
           ctx.currentPairMetrics.eta = '0s';
+
+          if (code !== 0 && hadOneDriveLimitError) {
+            fs.appendFileSync(
+              logFilePath,
+              `\n[ONEDRIVE 400-CHAR LIMIT DETECTED] Para ${pairSeqIndex}/${pairs.length} zakończona pomyślnie z ostrzeżeniem o limicie 400 znaków OneDrive (kod: ${code}).\n`
+            );
+          }
 
           ctx.completedPairsMetrics.push({ ...ctx.currentPairMetrics });
           ctx.currentPairMetrics = {
@@ -666,18 +701,15 @@ function executeRealJob(ctx: ActiveJobContext, selectedPairIds?: string[]): void
             bytesTotal: 0,
             checksChecked: 0,
             checksTotal: 0,
+            speed: '0 B/s',
+            eta: '--:--',
+            percentage: 0,
           };
           updateJobAggregatedStats(ctx);
 
           runNextPair();
         } else {
-          // If OneDrive 400 char error was captured, treat as warning/success according to prompt requirement
-          if (ctx.job.oneDriveLongPaths && ctx.job.oneDriveLongPaths.length > 0) {
-            fs.appendFileSync(logFilePath, `\n[ONEDRIVE 400-CHAR LIMIT DETECTED] Marking as success with warning as configured.\n`);
-            runNextPair();
-          } else {
-            finishJob(ctx, 'failed', `Proces zakończony kodem błędu: ${code}`);
-          }
+          finishJob(ctx, 'failed', `Proces zakończony kodem błędu: ${code}`);
         }
       });
 
@@ -770,7 +802,8 @@ function parseRealOutputProgress(ctx: ActiveJobContext, output: string): void {
       const dataMatch = line.match(/Transferred:\s+([0-9,.]+)\s*([KMGTPE]?i?B)\s*\/\s*([0-9,.]+)\s*([KMGTPE]?i?B)(?:,\s*([0-9]+)%)?(?:,\s*([0-9,.]+\s*[KMGTPE]?i?B\/s))?(?:,\s*ETA\s*([^\r\n,]+))?/i);
       if (dataMatch) {
         ctx.currentPairMetrics.bytesTransferred = parseFormattedSizeToBytes(dataMatch[1], dataMatch[2]);
-        ctx.currentPairMetrics.bytesTotal = parseFormattedSizeToBytes(dataMatch[3], dataMatch[4]);
+        const parsedBytesTotal = parseFormattedSizeToBytes(dataMatch[3], dataMatch[4]);
+        ctx.currentPairMetrics.bytesTotal = Math.max(ctx.currentPairMetrics.bytesTotal, parsedBytesTotal);
         if (dataMatch[5]) {
           ctx.currentPairMetrics.percentage = parseInt(dataMatch[5], 10);
         }
@@ -789,9 +822,23 @@ function parseRealOutputProgress(ctx: ActiveJobContext, output: string): void {
       const filesMatch = line.match(/Transferred:\s+([0-9]+)\s*\/\s*([0-9]+)(?:,\s*([0-9]+)%)?/i);
       if (filesMatch && !line.includes('B') && !line.includes('iB')) {
         ctx.currentPairMetrics.filesTransferred = parseInt(filesMatch[1], 10);
-        ctx.currentPairMetrics.filesTotal = parseInt(filesMatch[2], 10);
+        const parsedFilesTotal = parseInt(filesMatch[2], 10);
+        ctx.currentPairMetrics.filesTotal = Math.max(ctx.currentPairMetrics.filesTotal, parsedFilesTotal);
         if (filesMatch[3] && !ctx.currentPairMetrics.percentage) {
           ctx.currentPairMetrics.percentage = parseInt(filesMatch[3], 10);
+        }
+      }
+
+      // 2b. Rclone Errors count:
+      // "Errors: 4 (no need to retry)"
+      const errCountMatch = line.match(/Errors:\s*([0-9]+)(?:\s*\([^)]*\))?/i);
+      if (errCountMatch) {
+        const errorsCount = parseInt(errCountMatch[1], 10);
+        if (errorsCount > 0) {
+          ctx.currentPairMetrics.filesTotal = Math.max(
+            ctx.currentPairMetrics.filesTotal,
+            ctx.currentPairMetrics.filesTransferred + errorsCount
+          );
         }
       }
 
@@ -803,7 +850,7 @@ function parseRealOutputProgress(ctx: ActiveJobContext, output: string): void {
         const checked = parseInt(checksMatch[1], 10);
         const checkTotal = parseInt(checksMatch[2], 10);
         ctx.currentPairMetrics.checksChecked = checked;
-        ctx.currentPairMetrics.checksTotal = checkTotal;
+        ctx.currentPairMetrics.checksTotal = Math.max(ctx.currentPairMetrics.checksTotal || 0, checkTotal);
         // When no files need to be transferred, percentage reflects check progress
         if (checksMatch[3] && ctx.currentPairMetrics.filesTransferred === 0 && ctx.currentPairMetrics.bytesTotal === 0) {
           ctx.currentPairMetrics.percentage = parseInt(checksMatch[3], 10);
@@ -912,19 +959,73 @@ function parseRealOutputProgress(ctx: ActiveJobContext, output: string): void {
 }
 
 function checkOneDriveLongPathError(ctx: ActiveJobContext, text: string): void {
-  // Check for OneDrive path length error keywords
-  // e.g. "Path is too long" or "exceeds maximum length of 400 characters" or lines with > 400 chars
-  if (text.includes('Path is too long') || text.includes('400') || text.includes('path too long') || text.includes('name too long')) {
-    if (!ctx.job.oneDriveLongPaths) {
-      ctx.job.oneDriveLongPaths = [];
-    }
-    const lines = text.split('\n');
-    for (const l of lines) {
-      if (l.length > 200 || l.includes('too long')) {
-        ctx.job.oneDriveLongPaths.push(l.trim());
+  if (!text) return;
+  const lines = text.split(/[\r\n]+/);
+
+  if (!ctx.oneDriveLongPathsSet) {
+    ctx.oneDriveLongPathsSet = new Set<string>(ctx.job.oneDriveLongPaths || []);
+  }
+
+  const pair = ctx.task.pairs[ctx.currentPairIdx];
+  const srcBase = ctx.job.mode === 'restore' ? pair?.destination : pair?.source;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    // Check for OneDrive / SharePoint path length limit error indicators:
+    // e.g. "pathIsTooLong", "The specified file or folder name is too long", "400 characters or less", "name too long", "path too long"
+    const isOneDriveLimit =
+      line.includes('pathIsTooLong') ||
+      line.includes('The specified file or folder name is too long') ||
+      line.includes('400 characters or less') ||
+      line.includes('path too long') ||
+      line.includes('name too long');
+
+    if (!isOneDriveLimit) continue;
+
+    // Mark current pair as affected by OneDrive limit error
+    ctx.currentPairHadOneDriveLimitError = true;
+
+    // Extract specific file path from rclone error output lines:
+    // e.g.:
+    // "2026/09/25 21:21:21 ERROR : syncthing_OLD/Downloads/motorola edge 50 neo/Metro-w-Porto...png: Failed to copy: invalidRequest: pathIsTooLong: ..."
+    // "2026/09/25 21:21:22 ERROR : Wielka księga wartości...: Failed to copy: ..."
+    // "[STDERR] 2026/09/25 21:21:21 ERROR : Documents/Books/EPUB/...epub: Failed to copy: ..."
+    const cleanLine = line
+      .replace(/^\[STDERR\]\s*/i, '')
+      .replace(/^\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2}\s+(?:ERROR|WARNING|NOTICE|INFO)\s*:\s*/i, '')
+      .trim();
+
+    const fileMatch = cleanLine.match(
+      /^(.+?):\s*Failed to (?:copy|sync|move|upload)[^:]*:\s*(?:invalidRequest:\s*)?(?:pathIsTooLong|.*(?:path|name|URL).*too long|.*400\s*char)/i
+    );
+
+    if (fileMatch) {
+      const rawFilePath = fileMatch[1].trim();
+
+      // Guard against generic summary / driver messages
+      if (
+        !rawFilePath.startsWith('NOTICE') &&
+        !rawFilePath.startsWith('Encrypted drive') &&
+        !rawFilePath.startsWith("Can't retry") &&
+        !rawFilePath.includes('Failed to sync with')
+      ) {
+        // Construct clear full or relative path for user identification
+        let resolvedPath = rawFilePath;
+        if (srcBase && !rawFilePath.startsWith('/') && !rawFilePath.includes('://')) {
+          const cleanBase = srcBase.replace(/\/+$/, '');
+          resolvedPath = `${cleanBase}/${rawFilePath}`;
+        }
+        ctx.oneDriveLongPathsSet.add(resolvedPath);
       }
     }
-    ctx.job.warning = `Wykryto pliki przekraczające limit 400 znaków OneDrive (${ctx.job.oneDriveLongPaths.length} plików). Zapisano do raportu.`;
+  }
+
+  if (ctx.oneDriveLongPathsSet.size > 0) {
+    ctx.job.oneDriveLongPaths = Array.from(ctx.oneDriveLongPathsSet);
+    const count = ctx.job.oneDriveLongPaths.length;
+    ctx.job.warning = `Wykryto ${count} ${count === 1 ? 'plik pominięty' : count < 5 ? 'pliki pominięte' : 'plików pominiętych'} z powodu limitu 400 znaków OneDrive. Zapisano do raportu.`;
   }
 }
 
@@ -1150,6 +1251,34 @@ function finishJob(ctx: ActiveJobContext, finalStatus: 'completed' | 'failed' | 
   const checksInfo = (job.checksTotal || 0) > 0 ? `, Checked: ${job.checksChecked || job.checksTotal}/${job.checksTotal} files` : '';
   fs.appendFileSync(logFilePath, `\n----------------------------------------\n[SyncVault Job ${finalStatus.toUpperCase()} at ${job.endTime}]\nDuration: ${job.durationSeconds}s\nTransferred: ${job.filesTransferred}/${job.filesTotal} files${weightInfo}${checksInfo}\nStatus: ${finalStatus}\n`);
 
+  // Save OneDrive skipped paths report file to disk if any occurred
+  if (job.oneDriveLongPaths && job.oneDriveLongPaths.length > 0) {
+    try {
+      const taskFolder = path.dirname(logFilePath);
+      const reportFilename = `onedrive_400char_skipped_${job.id}.txt`;
+      const reportPath = path.join(taskFolder, reportFilename);
+      const reportContent =
+        `================================================================================\n` +
+        `SyncVault - Raport plików pominiętych z powodu limitu 400 znaków OneDrive\n` +
+        `================================================================================\n` +
+        `Zadanie: ${job.taskName}\n` +
+        `Job ID: ${job.id}\n` +
+        `Data wykonania: ${job.startTime}\n` +
+        `Liczba pominiętych plików: ${job.oneDriveLongPaths.length}\n\n` +
+        `UWAGA: Microsoft OneDrive oraz SharePoint narzucają sztywny limit maksymalnie 400 znaków\n` +
+        `dla pełnej ścieżki URL pliku i katalogu. W przypadku użycia szyfrowania rclone (crypt)\n` +
+        `ścieżki są kodowane i ulegają wydłużeniu o ok. 1.6x, co powoduje odrzucenie pliku przez chmurę.\n\n` +
+        `Lista pominiętych plików:\n` +
+        `--------------------------------------------------------------------------------\n` +
+        job.oneDriveLongPaths.map((p, i) => `${i + 1}. [Długość: ${p.length} zn.] ${p}`).join('\n') +
+        `\n--------------------------------------------------------------------------------\n`;
+      fs.writeFileSync(reportPath, reportContent, 'utf-8');
+      fs.appendFileSync(logFilePath, `\n[RAPORT ONEDRIVE >400 ZN.] Zapisano raport pominiętych plików (${job.oneDriveLongPaths.length} pozycji) do: ${reportPath}\n`);
+    } catch (e: any) {
+      console.error('[OneDrive Report] Error writing report file:', e);
+    }
+  }
+
   // Generate & save CSV reports from live execution data if requested in task notifications
   if (task.notifications?.csvReportSent || task.notifications?.csvReportDeleted) {
     try {
@@ -1183,11 +1312,12 @@ function finishJob(ctx: ActiveJobContext, finalStatus: 'completed' | 'failed' | 
   // Send notifications
   sendJobNotifications(job, task).catch(e => console.error('Notification error:', e));
 
-  // Run cleanup routines: Trash purge, Log retention, CSV report retention, and System logs retention
+  // Run cleanup routines: Trash purge, Log retention, CSV report retention, System logs retention, and DB backup retention
   cleanupTrashFolders(task);
   cleanupOldLogs(task);
   cleanupOldCsvReports(task);
   cleanupSystemLogs();
+  cleanupDatabaseBackups();
 
   // Chained task execution: "uruchom po zakończeniu innego zadania - kolejkowanie"
   if (finalStatus === 'completed' && job.mode === 'backup') {

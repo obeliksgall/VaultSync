@@ -32,6 +32,8 @@ import {
   getTaskDirName,
   getSessionDurationMs,
   getRcloneConfigPath,
+  listDatabaseBackups,
+  getDatabaseBackupPath,
   StoredUser,
 } from './server/db.js';
 import {
@@ -759,6 +761,57 @@ async function startServer() {
     res.download(fullLogPath, filename);
   });
 
+  app.get('/api/jobs/:id/onedrive-report', requireAuth, (req: Request, res: Response) => {
+    const job = getJobById(req.params.id) || getHistory().find(h => h.id === req.params.id);
+    if (!job || !job.oneDriveLongPaths || job.oneDriveLongPaths.length === 0) {
+      res.status(404).send('Brak raportu OneDrive dla tego zadania.');
+      return;
+    }
+
+    const reportFilename = `onedrive_400char_skipped_${job.id}.txt`;
+    const logsDir = getLogsDir();
+    let diskPath: string | null = null;
+
+    if (job.logFile) {
+      const taskFolder = path.dirname(path.join(logsDir, job.logFile));
+      if (fs.existsSync(taskFolder)) {
+        diskPath = path.join(taskFolder, reportFilename);
+      }
+    }
+
+    const reportContent =
+      `================================================================================\n` +
+      `SyncVault - Raport plików pominiętych z powodu limitu 400 znaków OneDrive\n` +
+      `================================================================================\n` +
+      `Zadanie: ${job.taskName}\n` +
+      `Job ID: ${job.id}\n` +
+      `Data wykonania: ${job.startTime}\n` +
+      `Liczba pominiętych plików: ${job.oneDriveLongPaths.length}\n\n` +
+      `UWAGA: Microsoft OneDrive oraz SharePoint narzucają sztywny limit maksymalnie 400 znaków\n` +
+      `dla pełnej ścieżki URL pliku i katalogu. W przypadku użycia szyfrowania rclone (crypt)\n` +
+      `ścieżki są kodowane i ulegają wydłużeniu o ok. 1.6x, co powoduje odrzucenie pliku przez chmurę.\n\n` +
+      `Lista pominiętych plików:\n` +
+      `--------------------------------------------------------------------------------\n` +
+      job.oneDriveLongPaths.map((p, i) => `${i + 1}. [Długość: ${p.length} zn.] ${p}`).join('\n') +
+      `\n--------------------------------------------------------------------------------\n`;
+
+    if (diskPath) {
+      if (!fs.existsSync(diskPath)) {
+        try {
+          fs.writeFileSync(diskPath, reportContent, 'utf-8');
+        } catch (e) {
+          console.error('[OneDrive Report] Error writing report file to disk:', e);
+        }
+      }
+      res.download(diskPath, reportFilename);
+      return;
+    }
+
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${reportFilename}"`);
+    res.send(reportContent);
+  });
+
   // 8c. Daily System / Container Logs (/data/logs/logs_YYYY-MM-DD.log)
   app.get('/api/system/logs', requireAuth, (req: Request, res: Response) => {
     const date = req.query.date as string | undefined;
@@ -781,6 +834,27 @@ async function startServer() {
       return;
     }
     const filename = path.basename(filePath);
+    res.download(filePath, filename);
+  });
+
+  // 8d. Database Safety Backups (/data/backupdb/syncvault-db_YYYY-MM-DD_HH-mm-ss.json)
+  app.get('/api/system/db-backups', requireAdmin, (req: Request, res: Response) => {
+    res.json(listDatabaseBackups());
+  });
+
+  app.get('/api/system/db-backups/download', requireAdmin, (req: Request, res: Response) => {
+    const filename = req.query.file as string | undefined;
+    if (!filename) {
+      res.status(400).send('Nie podano nazwy pliku kopii bazy.');
+      return;
+    }
+    const filePath = getDatabaseBackupPath(filename);
+    if (!filePath || !fs.existsSync(filePath)) {
+      res.status(404).send('Plik kopii zapasowej bazy danych nie istnieje.');
+      return;
+    }
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.download(filePath, filename);
   });
 

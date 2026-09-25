@@ -233,6 +233,11 @@ export const api = {
     return `/api/jobs/${encodeURIComponent(jobId)}/csv/${type}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
   },
 
+  getOneDriveReportDownloadUrl: (jobId: string) => {
+    const token = getAuthToken();
+    return `/api/jobs/${encodeURIComponent(jobId)}/onedrive-report${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+  },
+
   getTaskFileDownloadUrl: (taskId: string, filename: string) => {
     const token = getAuthToken();
     return `/api/tasks/${encodeURIComponent(taskId)}/files/download?file=${encodeURIComponent(filename)}${token ? `&token=${encodeURIComponent(token)}` : ''}`;
@@ -260,5 +265,13 @@ export const api = {
   getSystemLogDownloadUrl: (date?: string) => {
     const token = getAuthToken();
     return `/api/system/logs/download${date ? `?date=${encodeURIComponent(date)}` : ''}${token ? `${date ? '&' : '?'}token=${encodeURIComponent(token)}` : ''}`;
+  },
+  // Database safety backups (/data/backupdb/)
+  getDatabaseBackups: () =>
+    request<Array<{ filename: string; size: number; createdAt: string; filePath: string }>>('/api/system/db-backups'),
+
+  getDatabaseBackupDownloadUrl: (filename: string) => {
+    const token = getAuthToken();
+    return `/api/system/db-backups/download?file=${encodeURIComponent(filename)}${token ? `&token=${encodeURIComponent(token)}` : ''}`;
   },
 };

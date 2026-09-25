@@ -155,13 +155,20 @@ Aplikacja generuje raporty CSV bezpośrednio z operacji transferu oraz usuwania 
 
 ---
 
-## System / logi
+## System / logi / Kopie bazy danych
 
 | Metoda | Ścieżka | Auth | Opis |
 |---|---|---|---|
 | GET | `/api/system/logs` | user | Treść logów serwera/kontenera Docker (opcjonalny parametr `?date=YYYY-MM-DD`) |
 | GET | `/api/system/logs/download` | user | Pobranie pliku dziennego logu (`/data/logs/logs_YYYY-MM-DD.log`) |
+| GET | `/api/system/db-backups` | admin | Lista automatycznych kopii bazy danych z `/data/backupdb/` |
+| GET | `/api/system/db-backups/download?file=<nazwa>` | admin | Pobranie wskazanego pliku kopii bazy (`syncvault-db_*.json`) |
 | GET | `/api/fs/browse` | user | Przeglądarka systemu plików kontenera (`?path=/ścieżka`) do wyboru folderów |
+
+### Automatyczne kopie bazy danych (`/data/backupdb/`)
+Przed każdą modyfikacją pliku bazy `syncvault-db.json` (dodaniem/edycją/usunięciem zadania, użytkownika, hasła, ustawień) SyncVault automatycznie odkłada migawkę stanu do `/data/backupdb/syncvault-db_YYYY-MM-DD_HH-mm-ss.json`.
+- **Retencja czasowa (`dbBackupRetentionDays`):** domyślnie 14 dni.
+- **Twarda gwarancja ochrony (`dbBackupMinCopies`):** domyślnie min. 14 kopii. Nawet jeśli minęło więcej niż 14 dni, system **nigdy nie usunie** kopii, jeżeli w katalogu zostanie ich 14 lub mniej.
 
 ---
 
@@ -187,6 +194,8 @@ Aplikacja generuje raporty CSV bezpośrednio z operacji transferu oraz usuwania 
   "defaultTrashRetentionDays": 14,
   "csvReportRetentionDays": 7,
   "csvHeaderLanguage": "en",
+  "dbBackupRetentionDays": 14,
+  "dbBackupMinCopies": 14,
   "auditLogRetentionDays": 30,
   "auditLogMaxEntries": 2000,
   "autoLogoutTimeout": "30m",

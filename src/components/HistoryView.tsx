@@ -265,39 +265,59 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                   <td className="py-3.5 px-4 text-neutral-700 dark:text-neutral-300">
                     {item.durationSeconds ? `${item.durationSeconds}s` : '—'}
                   </td>
-                  <td className="py-3.5 px-4 text-right">
-                    <div className="inline-flex items-center gap-1.5 justify-end">
-                      <button
-                        onClick={() => onViewLogs(item)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-sans font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 transition-colors"
-                        title={item.logFile || (lang === 'pl' ? 'Podgląd pliku logu' : 'Preview log file')}
-                      >
-                        <FileText className="w-3.5 h-3.5" />
-                        <span>Log</span>
-                      </button>
-
-                      {item.csvFiles?.sentFile && (
-                        <a
-                          href={api.getJobCsvDownloadUrl(item.id, 'sent')}
-                          download
-                          className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-sans font-semibold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors"
-                          title={lang === 'pl' ? 'Pobierz CSV wysłanych plików' : 'Download sent files CSV'}
+                  <td className="py-2.5 px-4 text-right">
+                    <div className="flex flex-col items-end gap-1 justify-center">
+                      {/* Linia 1: Log + OneDrive >400 */}
+                      <div className="inline-flex items-center gap-1.5 justify-end">
+                        <button
+                          onClick={() => onViewLogs(item)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-sans font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 transition-colors"
+                          title={item.logFile || (lang === 'pl' ? 'Podgląd pliku logu' : 'Preview log file')}
                         >
-                          <FileSpreadsheet className="w-3 h-3" />
-                          <span>Wysłane</span>
-                        </a>
-                      )}
+                          <FileText className="w-3.5 h-3.5" />
+                          <span>Log</span>
+                        </button>
 
-                      {item.csvFiles?.deletedFile && (
-                        <a
-                          href={api.getJobCsvDownloadUrl(item.id, 'deleted')}
-                          download
-                          className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-sans font-semibold text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-900/50 transition-colors"
-                          title={lang === 'pl' ? 'Pobierz CSV usuniętych plików' : 'Download deleted files CSV'}
-                        >
-                          <FileSpreadsheet className="w-3 h-3" />
-                          <span>Usunięte</span>
-                        </a>
+                        {item.oneDriveLongPaths && item.oneDriveLongPaths.length > 0 && (
+                          <a
+                            href={api.getOneDriveReportDownloadUrl(item.id)}
+                            download
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-sans font-semibold text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-900/50 transition-colors"
+                            title={lang === 'pl' ? `Pobierz raport OneDrive >400 znaków (${item.oneDriveLongPaths.length} pominiętych plików)` : `Download OneDrive >400-char report (${item.oneDriveLongPaths.length} skipped files)`}
+                          >
+                            <AlertTriangle className="w-3 h-3" />
+                            <span>OD&gt;400 ({item.oneDriveLongPaths.length})</span>
+                          </a>
+                        )}
+                      </div>
+
+                      {/* Linia 2: Wysłane + Usunięte */}
+                      {(item.csvFiles?.sentFile || item.csvFiles?.deletedFile) && (
+                        <div className="inline-flex items-center gap-1.5 justify-end">
+                          {item.csvFiles?.sentFile && (
+                            <a
+                              href={api.getJobCsvDownloadUrl(item.id, 'sent')}
+                              download
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-sans font-semibold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors"
+                              title={lang === 'pl' ? 'Pobierz CSV wysłanych plików' : 'Download sent files CSV'}
+                            >
+                              <FileSpreadsheet className="w-3 h-3" />
+                              <span>Wysłane</span>
+                            </a>
+                          )}
+
+                          {item.csvFiles?.deletedFile && (
+                            <a
+                              href={api.getJobCsvDownloadUrl(item.id, 'deleted')}
+                              download
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-sans font-semibold text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-900/50 transition-colors"
+                              title={lang === 'pl' ? 'Pobierz CSV usuniętych plików' : 'Download deleted files CSV'}
+                            >
+                              <FileSpreadsheet className="w-3 h-3" />
+                              <span>Usunięte</span>
+                            </a>
+                          )}
+                        </div>
                       )}
                     </div>
                   </td>

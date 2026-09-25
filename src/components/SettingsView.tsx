@@ -28,6 +28,7 @@ import {
   FileSpreadsheet,
   Terminal,
   RefreshCw,
+  ShieldCheck,
 } from 'lucide-react';
 import {
   GlobalSettings,
@@ -41,6 +42,14 @@ import { Language, translations } from '../i18n.ts';
 import { api } from '../api.ts';
 import { RcloneConfigView } from './RcloneConfigView.tsx';
 import { UsersView } from './UsersView.tsx';
+
+const formatBytesLocal = (bytes: number): string => {
+  if (!bytes || bytes <= 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+};
 
 interface SettingsViewProps {
   lang: Language;
@@ -81,9 +90,32 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [testingEmail, setTestingEmail] = useState(false);
   const [showSmtpPassword, setShowSmtpPassword] = useState(false);
 
+  // Database Safety Backups state (/data/backupdb/)
+  const [dbBackups, setDbBackups] = useState<Array<{ filename: string; size: number; createdAt: string; filePath: string }>>([]);
+  const [loadingDbBackups, setLoadingDbBackups] = useState(false);
+
   useEffect(() => {
     loadSettings();
   }, []);
+
+  const loadDbBackups = async () => {
+    if (currentUser?.role !== 'admin') return;
+    setLoadingDbBackups(true);
+    try {
+      const list = await api.getDatabaseBackups();
+      setDbBackups(list);
+    } catch (err) {
+      console.warn('Failed to load database backups:', err);
+    } finally {
+      setLoadingDbBackups(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeSubTab === 'backup_docker') {
+      loadDbBackups();
+    }
+  }, [activeSubTab]);
 
   const loadSettings = async () => {
     setLoading(true);
@@ -106,6 +138,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     try {
       const res = await api.saveSettings(settings);
       setSettings(res.settings);
+      loadDbBackups();
       setMessage({ type: 'success', text: t.settings.savedSuccess });
       setTimeout(() => setMessage(null), 3000);
     } catch (err: any) {
@@ -252,7 +285,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </p>
         </div>
 
-        {(activeSubTab === 'general' || activeSubTab === 'notifications') && (
+        {(activeSubTab === 'general' || activeSubTab === 'notifications' || activeSubTab === 'backup_docker') && (
           <button
             onClick={handleSave}
             disabled={saving}
@@ -332,7 +365,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </button>
       </div>
 
-      {message && (activeSubTab === 'general' || activeSubTab === 'notifications') && (
+      {message && (activeSubTab === 'general' || activeSubTab === 'notifications' || activeSubTab === 'backup_docker') && (
         <div
           className={`p-3.5 rounded-xl border text-xs flex items-center gap-2 ${
             message.type === 'success'
@@ -1442,7 +1475,155 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
       </div>
 
-      {/* SECTION 3B: General / Docker Container Logs (/data/logs/logs_YYYY-MM-DD.log) */}
+      {/* SECTION 3B: Automatic Database Safety Backups (/data/backupdb/syncvault-db_YYYY-MM-DD_HH-mm-ss.json) */}
+      <div className="p-6 rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-neutral-100 dark:border-neutral-800">
+          <div>
+            <h3 className="text-sm font-bold text-neutral-900 dark:text-white flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+              <span>
+                {lang === 'pl'
+                  ? 'Automatyczne kopie bezpieczeństwa bazy danych (/data/backupdb/)'
+                  : 'Automatic Database Pre-Save Backups (/data/backupdb/)'}
+              </span>
+            </h3>
+            <p className="text-xs text-neutral-500 mt-0.5">
+              {lang === 'pl'
+                ? 'Przed każdą modyfikacją pliku bazy syncvault-db.json (zadania, użytkownicy, konfiguracja) system automatycznie odkłada migawkę stanu do podkatalogu data/backupdb/.'
+                : 'Before any write to syncvault-db.json, a complete safety snapshot is automatically archived into data/backupdb/.'}
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+            <button
+              type="button"
+              onClick={loadDbBackups}
+              disabled={loadingDbBackups}
+              className="h-9 flex items-center gap-1.5 px-3 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-750 text-neutral-700 dark:text-neutral-200 text-xs font-medium transition-colors shadow-sm disabled:opacity-50"
+              title={lang === 'pl' ? 'Odśwież listę kopii' : 'Refresh backup list'}
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loadingDbBackups ? 'animate-spin text-blue-500' : ''}`} />
+              <span>{lang === 'pl' ? 'Odśwież listę' : 'Refresh list'}</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Parametry retencji kopii bazy */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-stretch">
+          <div className="p-4 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-800/30 flex flex-col justify-between h-full">
+            <div>
+              <div className="flex items-center gap-2">
+                <Clock className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
+                <label className="text-xs font-bold text-neutral-900 dark:text-white">
+                  {lang === 'pl' ? 'Czas przechowywania kopii (retencja w dniach)' : 'Backup retention (days)'}
+                </label>
+              </div>
+              <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-1.5 leading-relaxed">
+                {lang === 'pl'
+                  ? 'Po ilu dniach stare kopie mogą być usuwane (domyślnie 14 dni).'
+                  : 'Days after which old backups can be pruned (default 14 days).'}
+              </p>
+            </div>
+            <div className="relative mt-4">
+              <input
+                type="number"
+                min={1}
+                max={3650}
+                value={settings.dbBackupRetentionDays ?? 14}
+                onChange={e => setSettings({ ...settings, dbBackupRetentionDays: Math.max(1, parseInt(e.target.value, 10) || 14) })}
+                className="w-full pl-3 pr-14 py-2 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white text-xs font-mono focus:ring-2 focus:ring-blue-500/20 focus:outline-none"
+              />
+              <span className="absolute right-3 top-2.5 text-xs text-neutral-400 dark:text-neutral-500 font-medium pointer-events-none">
+                {lang === 'pl' ? 'dni' : 'days'}
+              </span>
+            </div>
+          </div>
+
+          <div className="p-4 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-800/30 flex flex-col justify-between h-full">
+            <div>
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                <label className="text-xs font-bold text-neutral-900 dark:text-white">
+                  {lang === 'pl' ? 'Gwarantowana minimalna liczba kopii' : 'Guaranteed minimum copies'}
+                </label>
+              </div>
+              <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-1.5 leading-relaxed">
+                {lang === 'pl'
+                  ? 'Niezależnie od upływu czasu system NIGDY nie usunie kopii, jeśli w folderze zostanie ich mniej niż ta liczba (domyślnie 14 kopii).'
+                  : 'Regardless of age, the system will NEVER prune backups below this minimum count (default 14 copies).'}
+              </p>
+            </div>
+            <div className="relative mt-4">
+              <input
+                type="number"
+                min={1}
+                max={500}
+                value={settings.dbBackupMinCopies ?? 14}
+                onChange={e => setSettings({ ...settings, dbBackupMinCopies: Math.max(1, parseInt(e.target.value, 10) || 14) })}
+                className="w-full pl-3 pr-14 py-2 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white text-xs font-mono focus:ring-2 focus:ring-blue-500/20 focus:outline-none"
+              />
+              <span className="absolute right-3 top-2.5 text-xs text-neutral-400 dark:text-neutral-500 font-medium pointer-events-none">
+                {lang === 'pl' ? 'kopii' : 'copies'}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Lista zarchiwizowanych kopii */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold uppercase tracking-wider text-neutral-700 dark:text-neutral-300">
+              {lang === 'pl' ? 'Zarchiwizowane kopie bazy danych:' : 'Archived database backups:'}
+            </span>
+            <span className="text-xs font-medium text-neutral-500">
+              {lang === 'pl' ? `Dostępnych kopii: ${dbBackups.length}` : `Available copies: ${dbBackups.length}`}
+            </span>
+          </div>
+
+          {loadingDbBackups ? (
+            <div className="p-6 text-center text-xs text-neutral-500">
+              <RefreshCw className="w-5 h-5 animate-spin mx-auto text-blue-500 mb-2" />
+              <span>{lang === 'pl' ? 'Wczytywanie listy kopii zapasowych bazy...' : 'Loading database backups...'}</span>
+            </div>
+          ) : dbBackups.length === 0 ? (
+            <div className="p-4 rounded-xl border border-dashed border-neutral-300 dark:border-neutral-800 text-center text-xs text-neutral-500 dark:text-neutral-400">
+              {lang === 'pl'
+                ? 'Katalog /data/backupdb/ jest obecnie pusty. Pierwsza kopia zostanie utworzona automatycznie przy najbliższym zapisie zadania, użytkownika lub ustawień.'
+                : 'Directory /data/backupdb/ is currently empty. The first backup will be created automatically upon the next task, user, or settings save.'}
+            </div>
+          ) : (
+            <div className="max-h-72 overflow-y-auto rounded-xl border border-neutral-200 dark:border-neutral-800 divide-y divide-neutral-200 dark:divide-neutral-800">
+              {dbBackups.map(b => (
+                <div key={b.filename} className="p-3 bg-neutral-50/50 dark:bg-neutral-850/50 hover:bg-neutral-100/50 dark:hover:bg-neutral-800/50 flex items-center justify-between gap-3 text-xs transition-colors">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Database className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                    <div className="min-w-0">
+                      <div className="font-mono text-neutral-900 dark:text-white font-medium truncate">
+                        {b.filename}
+                      </div>
+                      <div className="text-[11px] text-neutral-500 mt-0.5">
+                        {new Date(b.createdAt).toLocaleString(lang === 'pl' ? 'pl-PL' : 'en-US')} • {formatBytesLocal(b.size)}
+                      </div>
+                    </div>
+                  </div>
+
+                  <a
+                    href={api.getDatabaseBackupDownloadUrl(b.filename)}
+                    download
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-750 text-neutral-700 dark:text-neutral-200 text-xs font-semibold shrink-0 transition-colors shadow-sm"
+                    title={lang === 'pl' ? 'Pobierz tę kopię bazy danych' : 'Download this database backup'}
+                  >
+                    <Download className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                    <span>{lang === 'pl' ? 'Pobierz .json' : 'Download .json'}</span>
+                  </a>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* SECTION 3C: General / Docker Container Logs (/data/logs/logs_YYYY-MM-DD.log) */}
       <div className="p-6 rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-neutral-100 dark:border-neutral-800">
           <div>

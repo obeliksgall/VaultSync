@@ -21,6 +21,7 @@ const RCLONE_CONFIG_FILE = process.env.RCLONE_CONFIG || process.env.RCLONE_CONFI
 const LOGS_DIR = path.join(DATA_DIR, 'logs');
 const FILES_DIR = path.join(DATA_DIR, 'files');
 const LEGACY_PLIKI_DIR = path.join(DATA_DIR, 'pliki');
+const BACKUP_DB_DIR = path.join(DATA_DIR, 'backupdb');
 
 export interface StoredUser extends User {
   passwordHash: string;
@@ -44,6 +45,8 @@ const DEFAULT_SETTINGS: GlobalSettings = {
   defaultTrashRetentionDays: 14,
   csvReportRetentionDays: 30,
   csvHeaderLanguage: 'en',
+  dbBackupRetentionDays: 14,
+  dbBackupMinCopies: 14,
   auditLogRetentionDays: 30,
   auditLogMaxEntries: 2000,
   autoLogoutTimeout: '30m',
@@ -81,6 +84,9 @@ export function ensureDirectories(): void {
   if (!fs.existsSync(FILES_DIR)) {
     fs.mkdirSync(FILES_DIR, { recursive: true });
   }
+  if (!fs.existsSync(BACKUP_DB_DIR)) {
+    fs.mkdirSync(BACKUP_DB_DIR, { recursive: true });
+  }
   process.env.RCLONE_CONFIG = RCLONE_CONFIG_FILE;
 }
 
@@ -97,6 +103,13 @@ export function getFilesDir(): string {
     fs.mkdirSync(FILES_DIR, { recursive: true });
   }
   return FILES_DIR;
+}
+
+export function getBackupDbDir(): string {
+  if (!fs.existsSync(BACKUP_DB_DIR)) {
+    fs.mkdirSync(BACKUP_DB_DIR, { recursive: true });
+  }
+  return BACKUP_DB_DIR;
 }
 
 // Backward-compatibility alias
@@ -269,6 +282,174 @@ export function migrateLegacyPlikiDir(tasks?: Task[]): void {
   }
 }
 
+/**
+ * Automatically consolidates older log folders in 'data/logs' into the canonical
+ * '<taskNumber>_<taskName>' folder (e.g. 'HDD_to_OneDrive' or '<shortId>_HDD_to_OneDrive' -> '4_HDD_to_OneDrive').
+ */
+export function migrateLegacyLogsDir(tasks?: Task[]): void {
+  try {
+    const logsDir = getLogsDir();
+    if (!fs.existsSync(logsDir)) return;
+    if (!tasks || tasks.length === 0) return;
+
+    const entries = fs.readdirSync(logsDir);
+    let historyModified = false;
+    const db = loadDatabase();
+
+    for (const entry of entries) {
+      const currentPath = path.join(logsDir, entry);
+      let stat;
+      try {
+        stat = fs.statSync(currentPath);
+      } catch {
+        continue;
+      }
+      if (!stat.isDirectory()) continue;
+
+      // Find matching task for this directory
+      const matchedTask = tasks.find(t => {
+        const canonical = getTaskDirName(t);
+        if (entry === canonical) return false; // Already canonical, skip!
+        const safeName = (t.name || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+        const shortId = t.id.slice(0, 8);
+        return (
+          entry === t.id ||
+          entry === safeName ||
+          entry === `${shortId}_${safeName}` ||
+          entry.endsWith(`_${safeName}`) ||
+          entry === `${t.taskNumber}`
+        );
+      });
+
+      if (!matchedTask) continue;
+
+      const targetDirName = getTaskDirName(matchedTask);
+      const targetDir = path.join(logsDir, targetDirName);
+      if (!fs.existsSync(targetDir)) {
+        fs.mkdirSync(targetDir, { recursive: true });
+      }
+
+      // Move all files (.log, .txt, etc.) from old directory to target directory
+      const files = fs.readdirSync(currentPath);
+      for (const file of files) {
+        const srcFile = path.join(currentPath, file);
+        const dstFile = path.join(targetDir, file);
+        if (!fs.existsSync(dstFile)) {
+          fs.renameSync(srcFile, dstFile);
+          console.log(`[SyncVault Migration] Moved log file: logs/${entry}/${file} -> logs/${targetDirName}/${file}`);
+        }
+
+        // Update references in history
+        const oldRel = `${entry}/${file}`;
+        const newRel = `${targetDirName}/${file}`;
+        for (const h of db.history) {
+          if (h.logFile === oldRel) {
+            h.logFile = newRel;
+            historyModified = true;
+          }
+        }
+      }
+
+      // Remove old directory if empty
+      try {
+        const remaining = fs.readdirSync(currentPath);
+        if (remaining.length === 0) {
+          fs.rmdirSync(currentPath);
+          console.log(`[SyncVault Migration] Removed old log directory: logs/${entry}`);
+        }
+      } catch {}
+    }
+
+    if (historyModified) {
+      saveHistoryFile(db);
+    }
+  } catch (err) {
+    console.error('[SyncVault Migration] Error migrating logs dir:', err);
+  }
+}
+
+/**
+ * Ensures that all completed/historical jobs with oneDriveLongPaths have their
+ * onedrive_400char_skipped_<jobId>.txt report file saved to disk in the task's log directory.
+ */
+export function syncOneDriveReportsOnDisk(history?: JobExecution[], tasks?: Task[]): void {
+  try {
+    const logsDir = getLogsDir();
+    if (!fs.existsSync(logsDir)) return;
+    const historyList = history || (loadDatabase().history);
+    if (!historyList || historyList.length === 0) return;
+
+    for (const job of historyList) {
+      if (!job.oneDriveLongPaths || job.oneDriveLongPaths.length === 0) continue;
+
+      const reportFilename = `onedrive_400char_skipped_${job.id}.txt`;
+      let targetDir: string | null = null;
+
+      if (job.logFile) {
+        const fullLogPath = path.join(logsDir, job.logFile);
+        const dir = path.dirname(fullLogPath);
+        if (fs.existsSync(dir)) {
+          targetDir = dir;
+        }
+      }
+
+      if (!targetDir && tasks && tasks.length > 0) {
+        const matchedTask = tasks.find(t => t.id === job.taskId || t.name === job.taskName);
+        if (matchedTask) {
+          const canonical = getTaskDirName(matchedTask);
+          const dir = path.join(logsDir, canonical);
+          if (fs.existsSync(dir)) {
+            targetDir = dir;
+          }
+        }
+      }
+
+      if (!targetDir) {
+        // Fallback: search for directory matching job.taskName in logsDir
+        const safeTaskName = (job.taskName || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+        try {
+          const entries = fs.readdirSync(logsDir);
+          for (const entry of entries) {
+            if (entry.includes(safeTaskName)) {
+              const candidate = path.join(logsDir, entry);
+              if (fs.statSync(candidate).isDirectory()) {
+                targetDir = candidate;
+                break;
+              }
+            }
+          }
+        } catch {}
+      }
+
+      if (targetDir) {
+        const reportPath = path.join(targetDir, reportFilename);
+        if (!fs.existsSync(reportPath)) {
+          const reportContent =
+            `================================================================================\n` +
+            `SyncVault - Raport plików pominiętych z powodu limitu 400 znaków OneDrive\n` +
+            `================================================================================\n` +
+            `Zadanie: ${job.taskName}\n` +
+            `Job ID: ${job.id}\n` +
+            `Data wykonania: ${job.startTime}\n` +
+            `Liczba pominiętych plików: ${job.oneDriveLongPaths.length}\n\n` +
+            `UWAGA: Microsoft OneDrive oraz SharePoint narzucają sztywny limit maksymalnie 400 znaków\n` +
+            `dla pełnej ścieżki URL pliku i katalogu. W przypadku użycia szyfrowania rclone (crypt)\n` +
+            `ścieżki są kodowane i ulegają wydłużeniu o ok. 1.6x, co powoduje odrzucenie pliku przez chmurę.\n\n` +
+            `Lista pominiętych plików:\n` +
+            `--------------------------------------------------------------------------------\n` +
+            job.oneDriveLongPaths.map((p, i) => `${i + 1}. [Długość: ${p.length} zn.] ${p}`).join('\n') +
+            `\n--------------------------------------------------------------------------------\n`;
+
+          fs.writeFileSync(reportPath, reportContent, 'utf-8');
+          console.log(`[SyncVault] Synced missing OneDrive 400-char report to disk: ${path.relative(logsDir, reportPath)}`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[SyncVault] Error syncing OneDrive reports to disk:', err);
+  }
+}
+
 export function getSessionDurationMs(settings: GlobalSettings): number {
   const timeout = settings.autoLogoutTimeout || '30m';
   switch (timeout) {
@@ -312,11 +493,145 @@ function readJsonFile<T = any>(filePath: string): T | null {
   }
 }
 
+/**
+ * Creates a safety backup of syncvault-db.json in data/backupdb/ before writing changes.
+ * Filename format: syncvault-db_YYYY-MM-DD_HH-mm-ss.json
+ * Retention rule: keeps backups up to retentionDays (default 14), but NEVER fewer than minCopies (default 14).
+ */
+export function backupCoreDbBeforeSave(settings?: GlobalSettings): void {
+  try {
+    if (!fs.existsSync(DB_FILE)) return;
+    const stat = fs.statSync(DB_FILE);
+    if (stat.size < 10) return;
+
+    const backupDir = getBackupDbDir();
+    const existingContent = fs.readFileSync(DB_FILE, 'utf-8');
+
+    // Check existing backups to avoid creating an identical duplicate file if content hasn't changed
+    const existingFiles = fs.readdirSync(backupDir)
+      .filter(fn => fn.startsWith('syncvault-db_') && fn.endsWith('.json'))
+      .sort((a, b) => b.localeCompare(a));
+
+    if (existingFiles.length > 0) {
+      const latestPath = path.join(backupDir, existingFiles[0]);
+      try {
+        const latestContent = fs.readFileSync(latestPath, 'utf-8');
+        if (latestContent === existingContent) {
+          // Content is identical to the latest backup, no need to duplicate
+          return;
+        }
+      } catch {}
+    }
+
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const dateStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
+    let backupFilename = `syncvault-db_${dateStr}.json`;
+    let backupPath = path.join(backupDir, backupFilename);
+
+    // If a backup with this exact second already exists, append a millisecond suffix
+    if (fs.existsSync(backupPath)) {
+      backupFilename = `syncvault-db_${dateStr}_${now.getMilliseconds()}.json`;
+      backupPath = path.join(backupDir, backupFilename);
+    }
+
+    fs.writeFileSync(backupPath, existingContent, 'utf-8');
+    console.log(`[SyncVault BackupDB] Created database safety backup before save: ${backupFilename}`);
+
+    // Retention cleanup
+    cleanupDatabaseBackups(settings);
+  } catch (err) {
+    console.error('[SyncVault BackupDB] Error during database backup before save:', err);
+  }
+}
+
+export function cleanupDatabaseBackups(settings?: GlobalSettings): void {
+  try {
+    const backupDir = getBackupDbDir();
+    if (!fs.existsSync(backupDir)) return;
+
+    const s = settings || getSettings();
+    const retentionDays = s?.dbBackupRetentionDays !== undefined ? s.dbBackupRetentionDays : 14;
+    const minCopies = s?.dbBackupMinCopies !== undefined ? s.dbBackupMinCopies : 14;
+
+    const allBackups = fs.readdirSync(backupDir)
+      .filter(fn => fn.startsWith('syncvault-db_') && fn.endsWith('.json'))
+      .map(fn => {
+        const full = path.join(backupDir, fn);
+        let mtimeMs = 0;
+        try {
+          mtimeMs = fs.statSync(full).mtimeMs;
+        } catch {}
+        return { filename: fn, fullPath: full, mtimeMs };
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+    // If total backups are within minCopies, never prune
+    if (allBackups.length <= minCopies) {
+      return;
+    }
+
+    if (retentionDays > 0) {
+      const cutoffMs = Date.now() - (retentionDays * 24 * 60 * 60 * 1000);
+      // Only consider pruning items beyond the first `minCopies`
+      for (let i = minCopies; i < allBackups.length; i++) {
+        const item = allBackups[i];
+        if (item.mtimeMs < cutoffMs) {
+          try {
+            fs.unlinkSync(item.fullPath);
+            console.log(`[SyncVault BackupDB] Pruned old database backup (older than ${retentionDays}d): ${item.filename}`);
+          } catch (e) {
+            console.warn(`[SyncVault BackupDB] Failed to delete old backup ${item.filename}:`, e);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[SyncVault BackupDB] Error during retention cleanup:', err);
+  }
+}
+
+export function listDatabaseBackups(): Array<{ filename: string; size: number; createdAt: string; filePath: string }> {
+  const backupDir = getBackupDbDir();
+  if (!fs.existsSync(backupDir)) return [];
+
+  try {
+    const files = fs.readdirSync(backupDir)
+      .filter(fn => fn.startsWith('syncvault-db_') && fn.endsWith('.json'));
+
+    return files.map(fn => {
+      const full = path.join(backupDir, fn);
+      const stat = fs.statSync(full);
+      return {
+        filename: fn,
+        size: stat.size,
+        createdAt: stat.mtime.toISOString(),
+        filePath: `backupdb/${fn}`,
+      };
+    }).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  } catch (err) {
+    console.error('[SyncVault BackupDB] Error listing database backups:', err);
+    return [];
+  }
+}
+
+export function getDatabaseBackupPath(filename: string): string | null {
+  if (!filename || filename.includes('/') || filename.includes('\\') || filename.includes('..')) {
+    return null;
+  }
+  if (!filename.startsWith('syncvault-db_') || !filename.endsWith('.json')) {
+    return null;
+  }
+  const full = path.join(getBackupDbDir(), filename);
+  return fs.existsSync(full) ? full : null;
+}
+
 // Targeted saves: each only serializes/writes the one file that actually
 // changed, instead of the old approach of rewriting users+tasks+settings+
 // history+auditLogs together on every single mutation.
 function saveCore(db: DatabaseSchema): void {
   ensureDirectories();
+  backupCoreDbBeforeSave(db.settings);
   writeJsonAtomic(DB_FILE, {
     users: db.users,
     tasks: db.tasks,
@@ -415,6 +730,12 @@ export function loadDatabase(): DatabaseSchema {
 
   // Migrate legacy data/pliki directory and raw UUID folders into data/files/<taskNumber>_<safeTaskName>
   migrateLegacyPlikiDir(dbCache.tasks);
+
+  // Migrate legacy log folders into data/logs/<taskNumber>_<safeTaskName>
+  migrateLegacyLogsDir(dbCache.tasks);
+
+  // Sync any historical OneDrive 400-char reports to disk if missing
+  syncOneDriveReportsOnDisk(dbCache.history, dbCache.tasks);
 
   return dbCache;
 }

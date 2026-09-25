@@ -47,6 +47,10 @@
   - Konfigurowalny limit jednoczesnych zadań w tle (`maxConcurrentJobs`).
 - **Niezależna, atomowa architektura bazy danych:**
   - Podział bazy danych na trzy autonomiczne pliki (`syncvault-db.json`, `syncvault-history.json`, `syncvault-audit.json`), co zapewnia wysoką wydajność, brak blokowania I/O i niezawodność przy intensywnym logowaniu.
+- **Automatyczne kopie bezpieczeństwa bazy danych (`data/backupdb/`):**
+  - Przed każdą modyfikacją pliku `syncvault-db.json` (dodanie/edycja zadania, użytkownika, zmiana ustawień) system automatycznie odkłada kopię migawkową `syncvault-db_YYYY-MM-DD_HH-mm-ss.json`.
+  - Konfigurowalna retencja czasowa (domyślnie 14 dni) z twardą gwarancją ochrony: system **nigdy nie usuwa kopii poniżej zadeklarowanego progu (domyślnie min. 14 kopii)**.
+  - Podgląd i bezpośrednie pobieranie kopii bazy w zakładce *Ustawienia &rarr; Kopia & Docker*.
 - **Kopia zapasowa konfiguracji (.svb):**
   - Eksport i import całej konfiguracji aplikacji, zadań, historii i haseł w zaszyfrowanych plikach `.svb`.
 
@@ -130,9 +134,10 @@ Dla zapewnienia maksymalnej wydajności I/O i niezawodności, SyncVault dzieli d
 1. **`syncvault-db.json`** — Użytkownicy (`users`), zadania (`tasks`), ustawienia globalne (`settings`) i konfiguracja powiadomień.
 2. **`syncvault-history.json`** — Pełna historia wykonań zadań (`history`), kody zakończenia, transferowane bajty, czasy trwania i metadane.
 3. **`syncvault-audit.json`** — Dziennik zdarzeń i operacji audytowych (`auditLogs`), rejestrujący działania użytkowników i systemu.
-4. **`files/` (`/data/files/<taskNumber>_<safeTaskName>/`)** — Wygenerowane raporty CSV (`*_sent.csv`, `*_deleted.csv`) z automatyczną retencją.
-5. **`logs/` (`/data/logs/<taskNumber>_<safeTaskName>/`)** — Surowe pliki logów procesów rsync/rclone z automatyczną retencją.
-6. **`logs/logs_YYYY-MM-DD.log`** — Codzienne logi systemowe i kontenera Docker.
+4. **`backupdb/` (`/data/backupdb/syncvault-db_YYYY-MM-DD_HH-mm-ss.json`)** — Automatyczne migawki bazy danych wykonywane przed każdym zapisem (retencja domyślnie 14 dni, gwarantowane zachowanie minimum 14 kopii).
+5. **`files/` (`/data/files/<taskNumber>_<safeTaskName>/`)** — Wygenerowane raporty CSV (`*_sent.csv`, `*_deleted.csv`) z automatyczną retencją.
+6. **`logs/` (`/data/logs/<taskNumber>_<safeTaskName>/`)** — Surowe pliki logów procesów rsync/rclone z automatyczną retencją.
+7. **`logs/logs_YYYY-MM-DD.log`** — Codzienne logi systemowe i kontenera Docker.
 
 - **Lokalizacja w kontenerze:** `/data/`
 - **Lokalizacja na hoście:** `./data/` (w katalogu, w którym znajduje się `docker-compose.yml`).
