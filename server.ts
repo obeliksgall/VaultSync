@@ -66,6 +66,158 @@ initSystemLogger();
 // In-memory token store for sessions with activity tracking
 const sessions = new Map<string, { userId: string; username: string; role: 'admin' | 'user'; expiresAt: number; lastActivity: number }>();
 
+// Short-lived single-use download tickets (valid for 60s) for direct browser file downloads
+const downloadTickets = new Map<string, { userId: string; username: string; role: 'admin' | 'user'; expiresAt: number }>();
+
+// Failed login attempt tracking for brute-force lockout
+interface FailedAttemptInfo {
+  count: number;
+  lockedUntil?: number;
+  firstAttempt: number;
+}
+const failedLogins = new Map<string, FailedAttemptInfo>();
+
+// Extract accurate client IP respecting Forwarded, X-Forwarded-For, or direct socket
+function getClientIp(req: Request): string {
+  const forwarded = req.headers['forwarded'];
+  if (typeof forwarded === 'string') {
+    const match = forwarded.match(/for="?([^";,\s]+)"?/i);
+    if (match && match[1]) {
+      return match[1];
+    }
+  }
+  const xForwardedFor = req.headers['x-forwarded-for'];
+  if (typeof xForwardedFor === 'string') {
+    const ip = xForwardedFor.split(',')[0]?.trim();
+    if (ip) return ip;
+  }
+  return req.ip || req.socket?.remoteAddress || '127.0.0.1';
+}
+
+// Built-in sliding-window rate limiter for login endpoint (zero external dependencies)
+interface IpRateLimitInfo {
+  count: number;
+  resetAt: number;
+}
+const ipRateLimits = new Map<string, IpRateLimitInfo>();
+
+function loginLimiter(req: Request, res: Response, next: NextFunction): void {
+  const ip = getClientIp(req);
+  const now = Date.now();
+  const settings = getSettings();
+  const lockoutMin = settings.loginLockoutMinutes ?? 15;
+  const windowMs = 15 * 60 * 1000;
+  const maxAttempts = Math.max(10, (settings.loginMaxAttempts ?? 5) * 4);
+
+  const info = ipRateLimits.get(ip);
+  if (!info || now > info.resetAt) {
+    ipRateLimits.set(ip, { count: 1, resetAt: now + windowMs });
+    return next();
+  }
+
+  info.count++;
+  if (info.count > maxAttempts) {
+    res.status(429).json({
+      error: `Zbyt wiele prób logowania z tego adresu IP. Odczekaj ${lockoutMin} minut przed kolejną próbą.`,
+    });
+    return;
+  }
+
+  next();
+}
+
+function checkAccountLockout(identifier: string): { locked: boolean; waitSeconds?: number } {
+  const now = Date.now();
+  const info = failedLogins.get(identifier);
+  if (!info) return { locked: false };
+  if (info.lockedUntil && now < info.lockedUntil) {
+    const waitSeconds = Math.ceil((info.lockedUntil - now) / 1000);
+    return { locked: true, waitSeconds };
+  }
+  if (info.lockedUntil && now >= info.lockedUntil) {
+    failedLogins.delete(identifier);
+    return { locked: false };
+  }
+  const settings = getSettings();
+  const lockoutMin = settings.loginLockoutMinutes ?? 15;
+  const windowMs = lockoutMin * 60 * 1000;
+  if (now - info.firstAttempt > windowMs) {
+    failedLogins.delete(identifier);
+    return { locked: false };
+  }
+  return { locked: false };
+}
+
+function recordFailedLogin(identifier: string): boolean {
+  const now = Date.now();
+  const settings = getSettings();
+  const lockoutMin = settings.loginLockoutMinutes ?? 15;
+  const maxAttempts = settings.loginMaxAttempts ?? 5;
+  const windowMs = lockoutMin * 60 * 1000;
+  const lockoutMs = lockoutMin * 60 * 1000;
+
+  let info = failedLogins.get(identifier);
+  if (!info || (now - info.firstAttempt > windowMs)) {
+    info = { count: 1, firstAttempt: now };
+  } else {
+    info.count += 1;
+  }
+  if (info.count >= maxAttempts) {
+    info.lockedUntil = now + lockoutMs;
+    failedLogins.set(identifier, info);
+    return true;
+  }
+  failedLogins.set(identifier, info);
+  return false;
+}
+
+function recordSuccessfulLogin(identifier: string): void {
+  failedLogins.delete(identifier);
+}
+
+// Periodic background sweep for expired sessions, download tickets, and lockouts (runs every 60s)
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, s] of sessions.entries()) {
+    if (now > s.expiresAt) {
+      sessions.delete(token);
+    }
+  }
+  for (const [ticket, t] of downloadTickets.entries()) {
+    if (now > t.expiresAt) {
+      downloadTickets.delete(ticket);
+    }
+  }
+  for (const [key, f] of failedLogins.entries()) {
+    if (f.lockedUntil && now > f.lockedUntil + 60000) {
+      failedLogins.delete(key);
+    } else if (!f.lockedUntil && now - f.firstAttempt > 30 * 60 * 1000) {
+      failedLogins.delete(key);
+    }
+  }
+  for (const [ip, l] of ipRateLimits.entries()) {
+    if (now > l.resetAt) {
+      ipRateLimits.delete(ip);
+    }
+  }
+}, 60 * 1000);
+
+// Sanitized API error responder (prevents leaking internal filesystem paths or raw stacks)
+function sendError(res: Response, status: number, defaultMessage: string, err?: any): void {
+  if (err) {
+    console.error(`[SyncVault API Error ${status}] ${defaultMessage}:`, err);
+  }
+  const rawMsg = typeof err === 'string' ? err : (err?.message || '');
+  const hasSystemPath = rawMsg.includes('/') || rawMsg.includes('\\') || rawMsg.includes('ENOENT') || rawMsg.includes('EACCES');
+  const hasStack = rawMsg.includes('at ') || rawMsg.includes('node:internal');
+
+  if (rawMsg && !hasSystemPath && !hasStack && rawMsg.length < 150) {
+    res.status(status).json({ error: rawMsg });
+  } else {
+    res.status(status).json({ error: defaultMessage });
+  }
+}
+
 function createSession(user: StoredUser): string {
   const token = crypto.randomBytes(32).toString('hex');
   const settings = getSettings();
@@ -86,9 +238,23 @@ function getSessionUser(req: Request): { userId: string; username: string; role:
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
     token = authHeader.substring(7);
-  } else if (req.query && typeof req.query.token === 'string') {
-    token = req.query.token;
   }
+
+  // Accept short-lived, single-use download ticket (for direct file downloads via browser)
+  if (!token && req.query && typeof req.query.ticket === 'string') {
+    const ticketStr = req.query.ticket;
+    const ticket = downloadTickets.get(ticketStr);
+    if (ticket && Date.now() <= ticket.expiresAt) {
+      downloadTickets.delete(ticketStr); // single-use: consumed immediately
+      return {
+        userId: ticket.userId,
+        username: ticket.username,
+        role: ticket.role,
+      };
+    }
+    return null;
+  }
+
   if (!token) return null;
   const session = sessions.get(token);
   if (!session) return null;
@@ -139,6 +305,9 @@ function requireAdmin(req: Request, res: Response, next: NextFunction): void {
 async function startServer() {
   const app = express();
   const PORT = 3000;
+
+  // Enable trust proxy so Express correctly resolves client IP behind reverse proxy / load balancer
+  app.set('trust proxy', 1);
 
   app.use(express.json({ limit: '15mb' }));
 
@@ -275,10 +444,10 @@ async function startServer() {
   });
 
   // 2. Auth: Initial Admin Setup
-  app.post('/api/auth/setup-admin', (req: Request, res: Response) => {
+  app.post('/api/auth/setup-admin', async (req: Request, res: Response) => {
     const { username, password } = req.body;
-    if (!username || !password || username.length < 3 || password.length < 6) {
-      res.status(400).json({ error: 'Nazwa użytkownika (min. 3 znaki) i hasło (min. 6 znaków) są wymagane.' });
+    if (!username || !password || username.length < 3 || password.length < 9) {
+      res.status(400).json({ error: 'Nazwa użytkownika (min. 3 znaki) i hasło (min. 9 znaków) są wymagane.' });
       return;
     }
 
@@ -289,32 +458,63 @@ async function startServer() {
     }
 
     try {
-      const admin = createFirstAdmin(username.trim(), password);
+      const admin = await createFirstAdmin(username.trim(), password);
       const stored = findUserById(admin.id)!;
       const token = createSession(stored);
       res.json({ success: true, token, user: admin });
     } catch (e: any) {
-      res.status(400).json({ error: e.message });
+      sendError(res, 400, 'Błąd konfiguracji administratora.', e);
     }
   });
 
-  // 3. Auth: Login
-  app.post('/api/auth/login', (req: Request, res: Response) => {
+  // 3. Auth: Login (with rate limiting and brute-force lockout)
+  app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) => {
     const { username, password } = req.body;
     if (!username || !password) {
       res.status(400).json({ error: 'Podaj nazwę użytkownika i hasło.' });
       return;
     }
 
-    const user = findUserByUsername(username);
-    if (!user || !bcrypt.compareSync(password, user.passwordHash)) {
-      addAuditLog(username, 'LOGIN_FAILED', 'Nieudana próba logowania', req.ip);
+    const clientIp = getClientIp(req);
+    const cleanUsername = String(username).trim();
+
+    // Check account or IP lockout
+    const ipLockout = checkAccountLockout(clientIp);
+    const userLockout = checkAccountLockout(cleanUsername.toLowerCase());
+    if (ipLockout.locked || userLockout.locked) {
+      const waitSeconds = Math.max(ipLockout.waitSeconds || 0, userLockout.waitSeconds || 0);
+      res.status(429).json({
+        error: `Konto lub adres IP zostało zablokowane z powodu zbyt wielu nieudanych prób logowania. Odczekaj ${waitSeconds}s przed kolejną próbą.`,
+      });
+      return;
+    }
+
+    const user = findUserByUsername(cleanUsername);
+    const isPasswordValid = user ? await bcrypt.compare(password, user.passwordHash) : false;
+
+    if (!user || !isPasswordValid) {
+      const ipLocked = recordFailedLogin(clientIp);
+      const userLocked = recordFailedLogin(cleanUsername.toLowerCase());
+      addAuditLog(cleanUsername, 'LOGIN_FAILED', 'Nieudana próba logowania', clientIp);
+
+      if (ipLocked || userLocked) {
+        const lockoutMin = getSettings().loginLockoutMinutes ?? 15;
+        addAuditLog(cleanUsername, 'LOGIN_LOCKOUT', `Konto lub adres IP (${clientIp}) zablokowane na ${lockoutMin} minut po przekroczeniu ${getSettings().loginMaxAttempts ?? 5} nieudanych prób logowania`, clientIp);
+        res.status(429).json({
+          error: `Zbyt wiele nieudanych prób logowania. Konto zostało tymczasowo zablokowane na ${lockoutMin} minut.`,
+        });
+        return;
+      }
+
       res.status(401).json({ error: 'Nieprawidłowa nazwa użytkownika lub hasło.' });
       return;
     }
 
+    recordSuccessfulLogin(clientIp);
+    recordSuccessfulLogin(cleanUsername.toLowerCase());
+
     const token = createSession(user);
-    addAuditLog(user.username, 'LOGIN_SUCCESS', `Zalogowano do panelu (${user.role})`, req.ip);
+    addAuditLog(user.username, 'LOGIN_SUCCESS', `Zalogowano do panelu (${user.role})`, clientIp);
     const { passwordHash: _, ...safeUser } = user;
     res.json({ success: true, token, user: safeUser });
   });
@@ -332,7 +532,7 @@ async function startServer() {
   // 4b. Auth: Heartbeat & Active Session Touch
   app.post('/api/auth/heartbeat', requireAuth, (req: Request, res: Response) => {
     const settings = getSettings();
-    const token = req.headers.authorization?.substring(7) || (typeof req.query.token === 'string' ? req.query.token : undefined);
+    const token = req.headers.authorization?.substring(7);
     if (token && sessions.has(token)) {
       const session = sessions.get(token)!;
       session.lastActivity = Date.now();
@@ -348,13 +548,26 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  // 4c. Auth: Issue short-lived, single-use download ticket (60s validity)
+  app.post('/api/auth/download-ticket', requireAuth, (req: Request, res: Response) => {
+    const user = (req as any).user;
+    const ticket = crypto.randomBytes(32).toString('hex');
+    downloadTickets.set(ticket, {
+      userId: user.userId,
+      username: user.username,
+      role: user.role,
+      expiresAt: Date.now() + 60 * 1000,
+    });
+    res.json({ ticket });
+  });
+
   // 5. Auth: Change Password
-  app.post('/api/auth/change-password', requireAuth, (req: Request, res: Response) => {
+  app.post('/api/auth/change-password', requireAuth, async (req: Request, res: Response) => {
     const user = (req as any).user;
     const { currentPassword, newPassword, targetUserId } = req.body;
 
-    if (!newPassword || newPassword.length < 6) {
-      res.status(400).json({ error: 'Nowe hasło musi mieć minimum 6 znaków.' });
+    if (!newPassword || newPassword.length < 9) {
+      res.status(400).json({ error: 'Nowe hasło musi mieć minimum 9 znaków.' });
       return;
     }
 
@@ -367,22 +580,23 @@ async function startServer() {
 
     // If changing own password, verify current password
     if (targetId === user.userId) {
-      if (!currentPassword || !bcrypt.compareSync(currentPassword, target.passwordHash)) {
+      const isCurrentValid = currentPassword ? await bcrypt.compare(currentPassword, target.passwordHash) : false;
+      if (!isCurrentValid) {
         res.status(400).json({ error: 'Aktualne hasło jest nieprawidłowe.' });
         return;
       }
     }
 
     try {
-      updateUserPassword(targetId, newPassword, user.username);
+      await updateUserPassword(targetId, newPassword, user.username);
       res.json({ success: true, message: 'Hasło zostało pomyślnie zmienione.' });
     } catch (e: any) {
-      res.status(400).json({ error: e.message });
+      sendError(res, 400, 'Błąd zmiany hasła.', e);
     }
   });
 
   // 5b. Auth: Verify Password (for sensitive actions like unlocking rclone.conf)
-  app.post('/api/auth/verify-password', requireAuth, (req: Request, res: Response) => {
+  app.post('/api/auth/verify-password', requireAuth, async (req: Request, res: Response) => {
     const user = (req as any).user;
     const { password } = req.body;
     if (!password) {
@@ -390,7 +604,8 @@ async function startServer() {
       return;
     }
     const target = findUserById(user.userId);
-    if (!target || !bcrypt.compareSync(password, target.passwordHash)) {
+    const isMatch = target ? await bcrypt.compare(password, target.passwordHash) : false;
+    if (!isMatch) {
       res.status(401).json({ error: 'Nieprawidłowe hasło.' });
       return;
     }
@@ -402,20 +617,20 @@ async function startServer() {
     res.json(getUsers());
   });
 
-  app.post('/api/users', requireAdmin, (req: Request, res: Response) => {
+  app.post('/api/users', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user;
     const { username, password, role } = req.body;
 
-    if (!username || !password || username.length < 3 || password.length < 6) {
-      res.status(400).json({ error: 'Nazwa użytkownika (min. 3 znaki) i hasło (min. 6 znaków) są wymagane.' });
+    if (!username || !password || username.length < 3 || password.length < 9) {
+      res.status(400).json({ error: 'Nazwa użytkownika (min. 3 znaki) i hasło (min. 9 znaków) są wymagane.' });
       return;
     }
 
     try {
-      const created = createUser(user.username, username.trim(), password, role === 'admin' ? 'admin' : 'user');
+      const created = await createUser(user.username, username.trim(), password, role === 'admin' ? 'admin' : 'user');
       res.json({ success: true, user: created });
     } catch (e: any) {
-      res.status(400).json({ error: e.message });
+      sendError(res, 400, 'Błąd tworzenia użytkownika.', e);
     }
   });
 
@@ -425,7 +640,7 @@ async function startServer() {
       deleteUser(req.params.id, user.username);
       res.json({ success: true });
     } catch (e: any) {
-      res.status(400).json({ error: e.message });
+      sendError(res, 400, 'Błąd usuwania użytkownika.', e);
     }
   });
 
@@ -656,12 +871,13 @@ async function startServer() {
       const job = enqueueTask(task, 'backup', undefined, user.username);
       res.json({ success: true, job });
     } catch (e: any) {
-      res.status(400).json({ error: e.message });
+      sendError(res, 400, 'Błąd uruchamiania zadania.', e);
     }
   });
 
   // Run Restore - available to both admin and normal user (if task.restoreEnabled)
-  app.post('/api/tasks/:id/restore', requireAuth, (req: Request, res: Response) => {
+  // When triggered by an operator (non-admin), password verification is strictly required
+  app.post('/api/tasks/:id/restore', requireAuth, async (req: Request, res: Response) => {
     const user = (req as any).user;
     const task = getTaskById(req.params.id);
     if (!task) {
@@ -674,12 +890,33 @@ async function startServer() {
       return;
     }
 
+    // Restore przez operatora - po kliknięciu Potwierdź i Uruchom restore MUSI wpisać hasło
+    if (user.role !== 'admin') {
+      const { password } = req.body;
+      if (!password || typeof password !== 'string') {
+        res.status(400).json({ error: 'Procedura przywracania danych (RESTORE) wymaga wpisania hasła konta operatora.' });
+        return;
+      }
+      const dbUser = findUserById(user.userId);
+      if (!dbUser) {
+        res.status(401).json({ error: 'Użytkownik nie istnieje.' });
+        return;
+      }
+      const isPasswordValid = await bcrypt.compare(password, dbUser.passwordHash);
+      if (!isPasswordValid) {
+        addAuditLog(user.username, 'RESTORE_PASSWORD_FAIL', `Nieudana autoryzacja hasłem procedury Restore dla zadania "${task.name}"`);
+        res.status(401).json({ error: 'Nieprawidłowe hasło użytkownika. Procedura Restore została zablokowana.' });
+        return;
+      }
+    }
+
     const { selectedPairIds } = req.body; // e.g. undefined for all, or array of pair IDs
     try {
       const job = enqueueTask(task, 'restore', selectedPairIds, `${user.username} (RESTORE)`);
+      addAuditLog(user.username, 'START_TASK_RESTORE', `Uruchomiono procedurę przywracania danych (RESTORE) dla zadania "${task.name}"`);
       res.json({ success: true, job });
     } catch (e: any) {
-      res.status(400).json({ error: e.message });
+      sendError(res, 400, 'Błąd uruchamiania procedury restore.', e);
     }
   });
 
@@ -740,7 +977,7 @@ async function startServer() {
       const logs = fs.readFileSync(fullLogPath, 'utf-8');
       res.json({ logs, filePath: job.logFile });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      sendError(res, 500, 'Błąd odczytu pliku logów zadania.', e);
     }
   });
 
@@ -812,9 +1049,13 @@ async function startServer() {
     res.send(reportContent);
   });
 
-  // 8c. Daily System / Container Logs (/data/logs/logs_YYYY-MM-DD.log)
-  app.get('/api/system/logs', requireAuth, (req: Request, res: Response) => {
+  // 8c. Daily System / Container Logs (/data/logs/logs_YYYY-MM-DD.log) - Admin only
+  app.get('/api/system/logs', requireAdmin, (req: Request, res: Response) => {
     const date = req.query.date as string | undefined;
+    if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      res.status(400).json({ error: 'Nieprawidłowy format daty logu (oczekiwano formatu YYYY-MM-DD).' });
+      return;
+    }
     const dates = getAvailableSystemLogDates();
     const logData = getSystemLogContent(date);
     res.json({
@@ -826,15 +1067,24 @@ async function startServer() {
     });
   });
 
-  app.get('/api/system/logs/download', requireAuth, (req: Request, res: Response) => {
+  app.get('/api/system/logs/download', requireAdmin, (req: Request, res: Response) => {
     const date = req.query.date as string | undefined;
-    const filePath = getSystemLogFilePath(date);
-    if (!fs.existsSync(filePath)) {
-      res.status(404).send('Plik logów systemowych dla wybranej daty nie istnieje.');
+    if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      res.status(400).send('Nieprawidłowy format daty logu (oczekiwano formatu YYYY-MM-DD).');
       return;
     }
-    const filename = path.basename(filePath);
-    res.download(filePath, filename);
+    try {
+      const filePath = getSystemLogFilePath(date);
+      if (!fs.existsSync(filePath)) {
+        res.status(404).send('Plik logów systemowych dla wybranej daty nie istnieje.');
+        return;
+      }
+      const filename = path.basename(filePath);
+      res.download(filePath, filename);
+    } catch (e: any) {
+      console.error('[SyncVault API Error 400] Błąd odczytu pliku logów:', e);
+      res.status(400).send('Błąd odczytu pliku logów.');
+    }
   });
 
   // 8d. Database Safety Backups (/data/backupdb/syncvault-db_YYYY-MM-DD_HH-mm-ss.json)
@@ -913,8 +1163,8 @@ async function startServer() {
     res.download(fullPath, downloadName);
   });
 
-  // List all CSV report files for a Task in data/files/<taskNumber>_<safeTaskName>/
-  app.get('/api/tasks/:id/files', requireAuth, (req: Request, res: Response) => {
+  // List all CSV report files for a Task in data/files/<taskNumber>_<safeTaskName>/ (Admin only)
+  app.get('/api/tasks/:id/files', requireAdmin, (req: Request, res: Response) => {
     const taskId = req.params.id;
     const task = getTasks().find(t => t.id === taskId);
     const taskFilesDir = task ? resolveTaskFilesDir(task) : path.join(getFilesDir(), taskId);
@@ -945,12 +1195,12 @@ async function startServer() {
 
       res.json(items);
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      sendError(res, 500, 'Błąd pobierania listy plików raportów.', e);
     }
   });
 
-  // Download specific CSV report file for a Task
-  app.get('/api/tasks/:id/files/download', requireAuth, (req: Request, res: Response) => {
+  // Download specific CSV report file for a Task (Admin only)
+  app.get('/api/tasks/:id/files/download', requireAdmin, (req: Request, res: Response) => {
     const taskId = req.params.id;
     const filename = req.query.file as string;
 
@@ -1012,7 +1262,7 @@ async function startServer() {
       addAuditLog(user.username, 'UPDATE_RCLONE_CONFIG', 'Zaktualizowano zawartość pliku rclone.conf');
       res.json({ success: true, message: 'Konfiguracja rclone została zapisana.' });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      sendError(res, 500, 'Błąd zapisu konfiguracji rclone.', e);
     }
   });
 
@@ -1025,7 +1275,14 @@ async function startServer() {
 
   app.put('/api/settings', requireAdmin, (req: Request, res: Response) => {
     const user = (req as any).user;
-    const updated = updateSettings(req.body, user.username);
+    const body = { ...req.body };
+    if (body.loginMaxAttempts !== undefined) {
+      body.loginMaxAttempts = Math.max(1, Math.min(50, parseInt(body.loginMaxAttempts, 10) || 5));
+    }
+    if (body.loginLockoutMinutes !== undefined) {
+      body.loginLockoutMinutes = Math.max(1, Math.min(1440, parseInt(body.loginLockoutMinutes, 10) || 15));
+    }
+    const updated = updateSettings(body, user.username);
     cleanupOldCsvReports();
     res.json({ success: true, settings: updated });
   });
@@ -1036,7 +1293,7 @@ async function startServer() {
       const result = await sendTestNotification(type, customTarget);
       res.json(result);
     } catch (e: any) {
-      res.status(400).json({ error: e.message || 'Błąd wysyłania powiadomienia testowego.' });
+      sendError(res, 400, 'Błąd wysyłania powiadomienia testowego.', e);
     }
   });
 
@@ -1051,9 +1308,13 @@ async function startServer() {
     res.json({ success: true, message: 'Wyczyszczono historię dziennika audytu.' });
   });
 
-  // 11b. Local Directory / File Browser
-  app.get('/api/fs/browse', requireAuth, (req: Request, res: Response) => {
+  // 11b. Local Directory / File Browser (Admin only)
+  app.get('/api/fs/browse', requireAdmin, (req: Request, res: Response) => {
     const reqPath = (req.query.path as string) || '/';
+    if (reqPath.includes('\0')) {
+      res.status(400).json({ error: 'Nieprawidłowa ścieżka.' });
+      return;
+    }
     const resolvedPath = path.resolve(reqPath);
 
     try {
@@ -1137,17 +1398,17 @@ async function startServer() {
         warning: fallbackWarning,
       });
     } catch (err: any) {
-      res.status(500).json({ error: `Błąd przeglądania katalogu: ${err.message}` });
+      sendError(res, 500, 'Błąd przeglądania katalogu.', err);
     }
   });
 
-  // 12. Encrypted Config Export & Import
+  // 12. Encrypted Config Export & Import (Admin only)
   app.post('/api/config/export', requireAdmin, (req: Request, res: Response) => {
     const user = (req as any).user;
     const { password } = req.body;
 
-    if (!password || password.length < 4) {
-      res.status(400).json({ error: 'Wprowadź hasło szyfrowania (min. 4 znaki).' });
+    if (!password || password.length < 9) {
+      res.status(400).json({ error: 'Wprowadź hasło szyfrowania (min. 9 znaków).' });
       return;
     }
 
@@ -1169,7 +1430,7 @@ async function startServer() {
       addAuditLog(user.username, 'EXPORT_CONFIG', 'Wyeksportowano zaszyfrowaną konfigurację systemu');
       res.json({ success: true, package: encrypted });
     } catch (e: any) {
-      res.status(400).json({ error: e.message });
+      sendError(res, 400, 'Błąd eksportu konfiguracji.', e);
     }
   });
 
@@ -1177,8 +1438,8 @@ async function startServer() {
     const user = (req as any).user;
     const { payload, password } = req.body;
 
-    if (!payload || !password) {
-      res.status(400).json({ error: 'Wymagany jest zaszyfrowany plik oraz hasło deszyfrowania.' });
+    if (!payload || !password || password.length < 9) {
+      res.status(400).json({ error: 'Wymagany jest zaszyfrowany plik oraz hasło deszyfrowania (min. 9 znaków).' });
       return;
     }
 
@@ -1218,7 +1479,7 @@ async function startServer() {
       addAuditLog(user.username, 'IMPORT_CONFIG', `Zaimportowano konfigurację (${importedTasksCount} zadań)`);
       res.json({ success: true, message: `Pomyślnie zaimportowano konfigurację (${importedTasksCount} zadań).` });
     } catch (e: any) {
-      res.status(400).json({ error: `Błąd deszyfrowania lub importu: ${e.message}` });
+      sendError(res, 400, 'Błąd deszyfrowania lub importu konfiguracji.', e);
     }
   });
 

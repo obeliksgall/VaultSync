@@ -38,8 +38,8 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
       return;
     }
 
-    if (newPassword.length < 6) {
-      setError(lang === 'pl' ? 'Nowe hasło musi mieć co najmniej 6 znaków.' : 'New password must have at least 6 characters.');
+    if (newPassword.length < 9) {
+      setError(lang === 'pl' ? 'Nowe hasło musi mieć co najmniej 9 znaków.' : 'New password must have at least 9 characters.');
       return;
     }
 

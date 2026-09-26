@@ -493,15 +493,17 @@ export const TasksView: React.FC<TasksViewProps> = ({
                       <Terminal className="w-4 h-4" />
                     </button>
 
-                    {/* Pliki raportów CSV */}
-                    <button
-                      type="button"
-                      onClick={() => setFilesModalTask(task)}
-                      className="p-2 rounded-xl text-neutral-500 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 transition-colors cursor-pointer"
-                      title={lang === 'pl' ? 'Pobierz raporty CSV (Wysłane / Usunięte)' : 'Download CSV reports (Sent / Deleted)'}
-                    >
-                      <FileSpreadsheet className="w-4 h-4" />
-                    </button>
+                    {/* Pliki raportów CSV (Tylko administrator) */}
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        onClick={() => setFilesModalTask(task)}
+                        className="p-2 rounded-xl text-neutral-500 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 transition-colors cursor-pointer"
+                        title={lang === 'pl' ? 'Pobierz raporty CSV (Wysłane / Usunięte)' : 'Download CSV reports (Sent / Deleted)'}
+                      >
+                        <FileSpreadsheet className="w-4 h-4" />
+                      </button>
+                    )}
 
                     {/* Duplikuj */}
                     {isAdmin && (

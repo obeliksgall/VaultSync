@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { X, RotateCcw, AlertTriangle, Terminal, CheckSquare, Square } from 'lucide-react';
-import { Task } from '../types.ts';
+import { X, RotateCcw, AlertTriangle, Terminal, CheckSquare, Square, KeyRound, Eye, EyeOff } from 'lucide-react';
+import { Task, User } from '../types.ts';
 import { Language, translations } from '../i18n.ts';
 import { api } from '../api.ts';
 
@@ -9,7 +9,8 @@ interface RestoreModalProps {
   isOpen: boolean;
   onClose: () => void;
   task: Task | null;
-  onConfirmRestore: (taskId: string, selectedPairIds?: string[]) => Promise<void> | void;
+  currentUser?: User | null;
+  onConfirmRestore: (taskId: string, selectedPairIds?: string[], password?: string) => Promise<void> | void;
 }
 
 export const RestoreModal: React.FC<RestoreModalProps> = ({
@@ -17,22 +18,33 @@ export const RestoreModal: React.FC<RestoreModalProps> = ({
   isOpen,
   onClose,
   task,
+  currentUser,
   onConfirmRestore,
 }) => {
   const t = translations[lang];
   const [selectedPairIds, setSelectedPairIds] = useState<string[]>([]);
   const [previewCommands, setPreviewCommands] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  const [operatorPassword, setOperatorPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+
+  const isOperator = currentUser?.role !== 'admin';
 
   // Reset loading state and initialize pairs whenever modal opens or task changes
   useEffect(() => {
     if (isOpen) {
       setLoading(false);
+      setOperatorPassword('');
+      setShowPassword(false);
+      setPasswordError(null);
       if (task) {
         setSelectedPairIds(task.pairs.map(p => p.id));
       }
     } else {
       setLoading(false);
+      setOperatorPassword('');
+      setPasswordError(null);
     }
   }, [task, isOpen]);
 
@@ -51,6 +63,8 @@ export const RestoreModal: React.FC<RestoreModalProps> = ({
 
   const handleClose = () => {
     setLoading(false);
+    setOperatorPassword('');
+    setPasswordError(null);
     onClose();
   };
 
@@ -70,10 +84,18 @@ export const RestoreModal: React.FC<RestoreModalProps> = ({
 
   const handleExecute = async () => {
     if (!task) return;
+    if (isOperator && !operatorPassword.trim()) {
+      setPasswordError(t.restoreModal.passwordRequired || 'Hasło operatora jest wymagane.');
+      return;
+    }
+
     try {
       setLoading(true);
+      setPasswordError(null);
       const pairsToPass = selectedPairIds.length === task.pairs.length ? undefined : selectedPairIds;
-      await onConfirmRestore(task.id, pairsToPass);
+      await onConfirmRestore(task.id, pairsToPass, isOperator ? operatorPassword : undefined);
+    } catch (err: any) {
+      setPasswordError(err.message || 'Błąd autoryzacji');
     } finally {
       setLoading(false);
     }
@@ -178,6 +200,54 @@ export const RestoreModal: React.FC<RestoreModalProps> = ({
               ))}
             </div>
           </div>
+
+          {/* Operator Password Authorization Box (Mandatory for non-admin) */}
+          {isOperator && (
+            <div className="p-4 rounded-xl border border-amber-300 dark:border-amber-700/60 bg-amber-50/70 dark:bg-amber-950/30 space-y-2">
+              <div className="flex items-center gap-2 text-xs font-bold text-amber-900 dark:text-amber-200">
+                <KeyRound className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                <span>{t.restoreModal.operatorPasswordLabel || 'Autoryzacja hasłem (wymagane dla Operatora)'}</span>
+              </div>
+              <p className="text-[11px] text-amber-800 dark:text-amber-300">
+                {t.restoreModal.operatorPasswordDesc || 'Wprowadź swoje hasło użytkownika, aby potwierdzić i autoryzować procedurę przywracania danych (RESTORE).'}
+              </p>
+              <div className="relative mt-2">
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={operatorPassword}
+                  onChange={e => {
+                    setOperatorPassword(e.target.value);
+                    if (passwordError) setPasswordError(null);
+                  }}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleExecute();
+                    }
+                  }}
+                  placeholder={t.restoreModal.operatorPasswordPlaceholder || 'Wpisz swoje hasło...'}
+                  className={`w-full pl-3 pr-10 py-2 text-xs rounded-lg border bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white outline-none focus:ring-2 ${
+                    passwordError
+                      ? 'border-rose-500 focus:ring-rose-500/20'
+                      : 'border-neutral-300 dark:border-neutral-700 focus:ring-amber-500/20 focus:border-amber-500'
+                  }`}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
+                >
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              {passwordError && (
+                <div className="text-[11px] font-semibold text-rose-600 dark:text-rose-400 flex items-center gap-1.5 mt-1">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                  <span>{passwordError}</span>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Footer */}
@@ -192,7 +262,7 @@ export const RestoreModal: React.FC<RestoreModalProps> = ({
           <button
             type="button"
             onClick={handleExecute}
-            disabled={loading || selectedPairIds.length === 0}
+            disabled={loading || selectedPairIds.length === 0 || (isOperator && !operatorPassword.trim())}
             className="px-5 py-2 text-sm font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-xl transition-colors shadow-sm disabled:opacity-50"
           >
             {loading ? t.common.loading : t.restoreModal.executeRestore}

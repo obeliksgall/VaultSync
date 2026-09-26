@@ -77,54 +77,43 @@ export const LogViewerModal: React.FC<LogViewerModalProps> = ({
 
   const handleDownloadOneDriveReport = () => {
     if (!job.oneDriveLongPaths || job.oneDriveLongPaths.length === 0) return;
-    const token = getAuthToken();
-    if (token && job.id) {
+    if (job.id) {
       const downloadUrl = api.getOneDriveReportDownloadUrl(job.id);
-      const link = document.createElement('a');
-      link.href = downloadUrl;
-      link.download = `onedrive_400char_skipped_${job.id}.txt`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+      api.downloadWithAuth(downloadUrl, `onedrive_400char_skipped_${job.id}.txt`).catch(() => {
+        // fallback in-memory blob
+        const content =
+          `================================================================================\n` +
+          `SyncVault - Raport plików pominiętych z powodu limitu 400 znaków OneDrive\n` +
+          `================================================================================\n` +
+          `Zadanie: ${job.taskName}\n` +
+          `Job ID: ${job.id}\n` +
+          `Data wykonania: ${new Date(job.startTime).toLocaleString(lang === 'pl' ? 'pl-PL' : 'en-US')}\n` +
+          `Liczba pominiętych plików: ${job.oneDriveLongPaths?.length || 0}\n\n` +
+          `Lista pominiętych plików:\n` +
+          `--------------------------------------------------------------------------------\n` +
+          (job.oneDriveLongPaths || []).map((p, i) => `${i + 1}. [Długość: ${p.length} zn.] ${p}`).join('\n') +
+          `\n--------------------------------------------------------------------------------\n`;
+
+        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `onedrive_400char_skipped_${job.id}.txt`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      });
       return;
     }
-
-    const content =
-      `================================================================================\n` +
-      `SyncVault - Raport plików pominiętych z powodu limitu 400 znaków OneDrive\n` +
-      `================================================================================\n` +
-      `Zadanie: ${job.taskName}\n` +
-      `Job ID: ${job.id}\n` +
-      `Data wykonania: ${new Date(job.startTime).toLocaleString(lang === 'pl' ? 'pl-PL' : 'en-US')}\n` +
-      `Liczba pominiętych plików: ${job.oneDriveLongPaths.length}\n\n` +
-      `UWAGA: Microsoft OneDrive oraz SharePoint narzucają sztywny limit maksymalnie 400 znaków\n` +
-      `dla pełnej ścieżki URL pliku i katalogu. W przypadku użycia szyfrowania rclone (crypt)\n` +
-      `ścieżki są kodowane i ulegają wydłużeniu o ok. 1.6x, co powoduje odrzucenie pliku przez chmurę.\n\n` +
-      `Lista pominiętych plików:\n` +
-      `--------------------------------------------------------------------------------\n` +
-      job.oneDriveLongPaths.map((p, i) => `${i + 1}. [Długość: ${p.length} zn.] ${p}`).join('\n') +
-      `\n--------------------------------------------------------------------------------\n`;
-
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `onedrive_400char_skipped_${job.id}.txt`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
   };
 
   const handleDownloadCsv = (type: 'sent' | 'deleted') => {
     if (!job) return;
     const url = api.getJobCsvDownloadUrl(job.id, type);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${job.taskName}_${type}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    api.downloadWithAuth(url, `${job.taskName}_${type}.csv`).catch(err => {
+      console.error('Error downloading CSV:', err);
+    });
   };
 
   const handleDownloadBothCsv = () => {

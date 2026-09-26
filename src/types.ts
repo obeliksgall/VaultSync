@@ -155,6 +155,8 @@ export interface GlobalSettings {
   dbBackupMinCopies?: number; // Minimalna liczba zachowywanych kopii bazy danych w data/backupdb/ (domyślnie 14, nigdy nie usuwa poniżej tej liczby)
   auditLogRetentionDays?: number; // 0 = unlimited, e.g. 7, 14, 30, 90, 180, 365
   auditLogMaxEntries?: number; // hard cap on stored audit log entries; 100 | 250 | 500 | 1000 | 2000 | 5000
+  loginMaxAttempts?: number; // Maksymalna liczba nieudanych prób logowania przed blokadą konta/IP (domyślnie: 5, zakres: 1-50)
+  loginLockoutMinutes?: number; // Czas trwania blokady konta/IP w minutach po przekroczeniu prób (domyślnie: 15, zakres: 1-1440)
   autoLogoutTimeout?: AutoLogoutTimeout; // '30m' | '1h' | '3h' | 'unlimited' (default: '30m')
   unlimitedDays?: number; // default: 7 (range: 1 - 28 days)
   notifications: NotificationSettings;

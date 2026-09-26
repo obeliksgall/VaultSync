@@ -24,6 +24,10 @@ export function getSystemTimestampStr(date: Date = new Date()): string {
 
 // Get the full path for a daily system log file
 export function getSystemLogFilePath(dateStr?: string): string {
+  if (dateStr && !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    throw new Error('Nieprawidłowy format daty logu (oczekiwano YYYY-MM-DD).');
+  }
+
   const dir = getLogsDir();
   if (!fs.existsSync(dir)) {
     try {
@@ -32,8 +36,15 @@ export function getSystemLogFilePath(dateStr?: string): string {
       // ignore
     }
   }
+
   const name = `logs_${dateStr || getSystemLogDateStr()}.log`;
-  return path.join(dir, name);
+  const resolvedPath = path.resolve(dir, name);
+  const resolvedLogsDir = path.resolve(dir);
+  if (!resolvedPath.startsWith(resolvedLogsDir + path.sep) && resolvedPath !== resolvedLogsDir) {
+    throw new Error('Odmowa dostępu: Wykryto próbę path traversal w ścieżce logów.');
+  }
+
+  return resolvedPath;
 }
 
 // Strip ANSI color / control characters from string
@@ -178,11 +189,17 @@ export function getAvailableSystemLogDates(): string[] {
  * Reads the content of a daily system log file
  */
 export function getSystemLogContent(dateStr?: string, maxBytes: number = 2 * 1024 * 1024): { content: string; filename: string; exists: boolean } {
-  const targetDate = dateStr || getSystemLogDateStr();
-  const filename = `logs_${targetDate}.log`;
-  const filePath = path.join(getLogsDir(), filename);
+  let filePath: string;
+  try {
+    filePath = getSystemLogFilePath(dateStr);
+  } catch (err: any) {
+    return { content: `[Błąd: ${err.message}]`, filename: '', exists: false };
+  }
+
+  const filename = path.basename(filePath);
 
   if (!fs.existsSync(filePath)) {
+    const targetDate = dateStr || getSystemLogDateStr();
     return { content: `[Brak pliku logów systemowych dla daty ${targetDate}]`, filename, exists: false };
   }
 

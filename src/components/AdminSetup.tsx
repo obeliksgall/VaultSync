@@ -26,8 +26,8 @@ export const AdminSetup: React.FC<AdminSetupProps> = ({ lang, onSetupSuccess }) 
       return;
     }
 
-    if (password.length < 6) {
-      setError(lang === 'pl' ? 'Hasło musi mieć co najmniej 6 znaków.' : 'Password must be at least 6 characters.');
+    if (password.length < 9) {
+      setError(lang === 'pl' ? 'Hasło musi mieć co najmniej 9 znaków.' : 'Password must be at least 9 characters.');
       return;
     }
 

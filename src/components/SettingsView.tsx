@@ -29,6 +29,7 @@ import {
   Terminal,
   RefreshCw,
   ShieldCheck,
+  ShieldAlert,
 } from 'lucide-react';
 import {
   GlobalSettings,
@@ -173,8 +174,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   };
 
   const handleExport = async () => {
-    if (!exportPassphrase || exportPassphrase.length < 4) {
-      alert('Podaj hasło szyfrujące (min. 4 znaki).');
+    if (!exportPassphrase || exportPassphrase.length < 9) {
+      alert(lang === 'pl' ? 'Podaj hasło szyfrujące (min. 9 znaków).' : 'Enter encryption passphrase (min. 9 chars).');
       return;
     }
 
@@ -230,11 +231,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const handleImport = async () => {
     if (!importFile) {
-      alert('Wybierz plik kopii zapasowej (*.svb).');
+      alert(lang === 'pl' ? 'Wybierz plik kopii zapasowej (*.svb).' : 'Select backup file (*.svb).');
       return;
     }
-    if (!importPassphrase) {
-      alert('Podaj hasło deszyfrujące.');
+    if (!importPassphrase || importPassphrase.length < 9) {
+      alert(lang === 'pl' ? 'Podaj hasło deszyfrujące (min. 9 znaków).' : 'Enter decryption passphrase (min. 9 chars).');
       return;
     }
 
@@ -684,6 +685,76 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <option value={1000}>{lang === 'pl' ? 'Ostatnie 1000 wpisów' : 'Last 1000 entries'}</option>
                 <option value={2000}>{lang === 'pl' ? 'Ostatnie 2000 wpisów' : 'Last 2000 entries'}</option>
               </select>
+            </div>
+          </div>
+
+          {/* Item 6: Max Login Attempts before Lockout */}
+          <div className="p-4 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-800/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-start gap-3 flex-1 min-w-0">
+              <div className="p-2 rounded-lg bg-rose-100 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5">
+                <ShieldAlert className="w-4 h-4" />
+              </div>
+              <div>
+                <h4 className="text-xs font-bold text-neutral-900 dark:text-white">
+                  {lang === 'pl' ? 'Maksymalna liczba nieudanych prób logowania' : 'Maximum Failed Login Attempts'}
+                </h4>
+                <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-0.5">
+                  {lang === 'pl'
+                    ? 'Liczba kolejnych błędnych prób logowania na konto lub z danego adresu IP przed nałożeniem automatycznej blokady brute-force (domyślnie 5).'
+                    : 'Number of consecutive failed login attempts on an account or IP before automatic brute-force lockout is triggered (default: 5).'}
+                </p>
+              </div>
+            </div>
+            <div className="w-full sm:w-64 shrink-0 relative">
+              <input
+                type="number"
+                min={1}
+                max={50}
+                value={settings.loginMaxAttempts ?? 5}
+                onChange={e => {
+                  const val = parseInt(e.target.value, 10);
+                  setSettings({ ...settings, loginMaxAttempts: isNaN(val) ? 5 : Math.max(1, Math.min(50, val)) });
+                }}
+                className="w-full pl-3 pr-16 py-2 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white text-xs font-mono"
+              />
+              <span className="absolute right-3 top-2.5 text-xs text-neutral-400 dark:text-neutral-500 font-medium pointer-events-none">
+                {lang === 'pl' ? 'prób' : 'attempts'}
+              </span>
+            </div>
+          </div>
+
+          {/* Item 7: Lockout Duration in Minutes */}
+          <div className="p-4 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-800/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-start gap-3 flex-1 min-w-0">
+              <div className="p-2 rounded-lg bg-amber-100 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5">
+                <Clock className="w-4 h-4" />
+              </div>
+              <div>
+                <h4 className="text-xs font-bold text-neutral-900 dark:text-white">
+                  {lang === 'pl' ? 'Czas trwania blokady po przekroczeniu prób (minuty)' : 'Lockout Duration (minutes)'}
+                </h4>
+                <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-0.5">
+                  {lang === 'pl'
+                    ? 'Czas w minutach, przez jaki konto oraz adres IP pozostają zablokowane po serii nieudanych prób logowania (domyślnie 15 minut).'
+                    : 'Duration in minutes during which the account and client IP remain locked out after failed login attempts (default: 15 minutes).'}
+                </p>
+              </div>
+            </div>
+            <div className="w-full sm:w-64 shrink-0 relative">
+              <input
+                type="number"
+                min={1}
+                max={1440}
+                value={settings.loginLockoutMinutes ?? 15}
+                onChange={e => {
+                  const val = parseInt(e.target.value, 10);
+                  setSettings({ ...settings, loginLockoutMinutes: isNaN(val) ? 15 : Math.max(1, Math.min(1440, val)) });
+                }}
+                className="w-full pl-3 pr-16 py-2 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white text-xs font-mono"
+              />
+              <span className="absolute right-3 top-2.5 text-xs text-neutral-400 dark:text-neutral-500 font-medium pointer-events-none">
+                {lang === 'pl' ? 'min.' : 'min'}
+              </span>
             </div>
           </div>
         </div>
@@ -1409,7 +1480,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 type="password"
                 value={exportPassphrase}
                 onChange={e => setExportPassphrase(e.target.value)}
-                placeholder={lang === 'pl' ? 'Hasło szyfrowania (min. 4 znaki)...' : 'Encryption passphrase (min. 4 chars)...'}
+                placeholder={lang === 'pl' ? 'Hasło szyfrowania (min. 9 znaków)...' : 'Encryption passphrase (min. 9 chars)...'}
                 className="w-full h-10 px-3 py-2 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white text-xs placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
               />
               <button
@@ -1456,7 +1527,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   type="password"
                   value={importPassphrase}
                   onChange={e => setImportPassphrase(e.target.value)}
-                  placeholder={lang === 'pl' ? 'Hasło deszyfrowania pliku...' : 'File decryption passphrase...'}
+                  placeholder={lang === 'pl' ? 'Hasło deszyfrowania pliku (min. 9 znaków)...' : 'File decryption passphrase (min. 9 chars)...'}
                   className="w-full h-10 px-3 py-2 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white text-xs placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                 />
               </div>

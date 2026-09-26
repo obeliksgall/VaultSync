@@ -15,8 +15,8 @@ const ITERATIONS = 100000;
 const DIGEST = 'sha512';
 
 export function encryptConfiguration(plainData: object, passwordPlain: string): EncryptedPayload {
-  if (!passwordPlain || passwordPlain.length < 4) {
-    throw new Error('Hasło szyfrowania konfiguracji musi mieć co najmniej 4 znaki.');
+  if (!passwordPlain || passwordPlain.length < 9) {
+    throw new Error('Hasło szyfrowania konfiguracji musi mieć co najmniej 9 znaków.');
   }
 
   const salt = crypto.randomBytes(16);

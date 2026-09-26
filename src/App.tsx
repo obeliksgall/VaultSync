@@ -214,6 +214,17 @@ export default function App() {
     return () => clearInterval(interval);
   }, [currentUser, refreshJobs]);
 
+  // Role guard: Non-admin users (operators) are restricted from admin-only tabs
+  // If an operator is logged in and active tab is an admin-only tab, automatically switch to 'tasks'
+  useEffect(() => {
+    if (currentUser && currentUser.role !== 'admin') {
+      const adminOnlyTabs = ['rclone', 'users', 'settings', 'audit'];
+      if (adminOnlyTabs.includes(currentTab)) {
+        setCurrentTab('tasks');
+      }
+    }
+  }, [currentUser, currentTab]);
+
   // Refresh history occasionally (every 10 seconds)
   useEffect(() => {
     if (!currentUser) return;
@@ -231,6 +242,7 @@ export default function App() {
     }
     setAuthToken(null);
     setCurrentUser(null);
+    setCurrentTab('tasks');
   };
 
   const getTimeoutSeconds = useCallback(() => {
@@ -406,9 +418,9 @@ export default function App() {
     setRestoreModalOpen(true);
   };
 
-  const handleConfirmRestore = async (taskId: string, selectedPairIds?: string[]) => {
+  const handleConfirmRestore = async (taskId: string, selectedPairIds?: string[], password?: string) => {
     try {
-      await api.restoreTask(taskId, selectedPairIds);
+      await api.restoreTask(taskId, selectedPairIds, password);
       setRestoreModalOpen(false);
       setRestoringTask(null);
       refreshJobs();
@@ -431,6 +443,7 @@ export default function App() {
             ? `Błąd uruchomienia przywracania: ${err.message}`
             : `Failed to start restore: ${err.message}`,
       });
+      throw err;
     }
   };
 
@@ -477,6 +490,7 @@ export default function App() {
         <AdminSetup
           lang={lang}
           onSetupSuccess={user => {
+            setCurrentTab('tasks');
             setCurrentUser(user);
             checkStatus();
           }}
@@ -492,6 +506,7 @@ export default function App() {
         <LoginModal
           lang={lang}
           onLoginSuccess={user => {
+            setCurrentTab('tasks');
             setCurrentUser(user);
             checkStatus();
           }}
@@ -520,7 +535,7 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {currentTab === 'tasks' && (
+        {(currentTab === 'tasks' || (currentUser.role !== 'admin' && !['monitor', 'history', 'help'].includes(currentTab))) && (
           <TasksView
             lang={lang}
             tasks={tasks}
@@ -612,6 +627,7 @@ export default function App() {
           setRestoringTask(null);
         }}
         task={restoringTask}
+        currentUser={currentUser}
         onConfirmRestore={handleConfirmRestore}
       />
 

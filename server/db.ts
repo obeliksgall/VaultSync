@@ -49,6 +49,8 @@ const DEFAULT_SETTINGS: GlobalSettings = {
   dbBackupMinCopies: 14,
   auditLogRetentionDays: 30,
   auditLogMaxEntries: 2000,
+  loginMaxAttempts: 5,
+  loginLockoutMinutes: 15,
   autoLogoutTimeout: '30m',
   unlimitedDays: 7,
   notifications: {
@@ -765,14 +767,17 @@ export function findUserById(id: string): StoredUser | undefined {
   return db.users.find(u => u.id === id);
 }
 
-export function createFirstAdmin(username: string, passwordPlain: string): User {
+export async function createFirstAdmin(username: string, passwordPlain: string): Promise<User> {
   const db = loadDatabase();
   if (db.users.length > 0) {
-    throw new Error('Administrator account already exists.');
+    throw new Error('Konto administratora zostało już utworzone.');
+  }
+  if (!passwordPlain || passwordPlain.length < 9) {
+    throw new Error('Hasło musi mieć minimum 9 znaków.');
   }
 
-  const salt = bcrypt.genSaltSync(10);
-  const passwordHash = bcrypt.hashSync(passwordPlain, salt);
+  const salt = await bcrypt.genSalt(10);
+  const passwordHash = await bcrypt.hash(passwordPlain, salt);
 
   const adminUser: StoredUser = {
     id: crypto.randomUUID(),
@@ -784,19 +789,22 @@ export function createFirstAdmin(username: string, passwordPlain: string): User 
 
   db.users.push(adminUser);
   saveCore(db);
-  addAuditLog('SYSTEM', 'SETUP_ADMIN', `Created initial administrator: ${username}`);
+  addAuditLog('SYSTEM', 'SETUP_ADMIN', `Utworzono początkowe konto administratora: ${username}`);
   const { passwordHash: _, ...safeUser } = adminUser;
   return safeUser;
 }
 
-export function createUser(creatorUsername: string, username: string, passwordPlain: string, role: 'admin' | 'user' = 'user'): User {
+export async function createUser(creatorUsername: string, username: string, passwordPlain: string, role: 'admin' | 'user' = 'user'): Promise<User> {
   const db = loadDatabase();
   if (db.users.some(u => u.username.toLowerCase() === username.toLowerCase())) {
-    throw new Error('User with this username already exists.');
+    throw new Error('Użytkownik o takiej nazwie już istnieje.');
+  }
+  if (!passwordPlain || passwordPlain.length < 9) {
+    throw new Error('Hasło musi mieć minimum 9 znaków.');
   }
 
-  const salt = bcrypt.genSaltSync(10);
-  const passwordHash = bcrypt.hashSync(passwordPlain, salt);
+  const salt = await bcrypt.genSalt(10);
+  const passwordHash = await bcrypt.hash(passwordPlain, salt);
 
   const newUser: StoredUser = {
     id: crypto.randomUUID(),
@@ -808,20 +816,23 @@ export function createUser(creatorUsername: string, username: string, passwordPl
 
   db.users.push(newUser);
   saveCore(db);
-  addAuditLog(creatorUsername, 'CREATE_USER', `Created user ${username} with role ${role}`);
+  addAuditLog(creatorUsername, 'CREATE_USER', `Utworzono użytkownika ${username} z rolą ${role}`);
   const { passwordHash: _, ...safeUser } = newUser;
   return safeUser;
 }
 
-export function updateUserPassword(userId: string, newPasswordPlain: string, actorUsername: string): void {
+export async function updateUserPassword(userId: string, newPasswordPlain: string, actorUsername: string): Promise<void> {
   const db = loadDatabase();
   const user = db.users.find(u => u.id === userId);
-  if (!user) throw new Error('User not found.');
+  if (!user) throw new Error('Użytkownik nie istnieje.');
+  if (!newPasswordPlain || newPasswordPlain.length < 9) {
+    throw new Error('Nowe hasło musi mieć minimum 9 znaków.');
+  }
 
-  const salt = bcrypt.genSaltSync(10);
-  user.passwordHash = bcrypt.hashSync(newPasswordPlain, salt);
+  const salt = await bcrypt.genSalt(10);
+  user.passwordHash = await bcrypt.hash(newPasswordPlain, salt);
   saveCore(db);
-  addAuditLog(actorUsername, 'CHANGE_PASSWORD', `Changed password for user ${user.username}`);
+  addAuditLog(actorUsername, 'CHANGE_PASSWORD', `Zmieniono hasło dla użytkownika ${user.username}`);
 }
 
 export function deleteUser(userId: string, actorUsername: string): void {

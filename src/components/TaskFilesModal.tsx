@@ -119,12 +119,9 @@ export const TaskFilesModal: React.FC<TaskFilesModalProps> = ({
 
   const handleDownloadSingle = (filename: string) => {
     const url = api.getTaskFileDownloadUrl(task.id, filename);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    api.downloadWithAuth(url, filename).catch(err => {
+      setError(err.message || (lang === 'pl' ? 'Błąd pobierania pliku' : 'Download failed'));
+    });
   };
 
   const handleDownloadBoth = (group: RunGroup) => {

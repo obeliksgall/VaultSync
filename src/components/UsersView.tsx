@@ -85,8 +85,8 @@ export const UsersView: React.FC<UsersViewProps> = ({
     setError(null);
     setSuccess(null);
 
-    if (newPassword.length < 6) {
-      setError(lang === 'pl' ? 'Hasło musi mieć co najmniej 6 znaków.' : 'Password must be at least 6 characters.');
+    if (newPassword.length < 9) {
+      setError(lang === 'pl' ? 'Hasło musi mieć co najmniej 9 znaków.' : 'Password must be at least 9 characters.');
       return;
     }
 

@@ -148,10 +148,10 @@ export const api = {
   runTask: (id: string) =>
     request<{ success: boolean; job: JobExecution }>(`/api/tasks/${id}/run`, { method: 'POST' }),
 
-  restoreTask: (id: string, selectedPairIds?: string[]) =>
+  restoreTask: (id: string, selectedPairIds?: string[], password?: string) =>
     request<{ success: boolean; job: JobExecution }>(`/api/tasks/${id}/restore`, {
       method: 'POST',
-      body: JSON.stringify({ selectedPairIds }),
+      body: JSON.stringify({ selectedPairIds, password }),
     }),
 
   // Jobs
@@ -228,19 +228,61 @@ export const api = {
       `/api/tasks/${taskId}/files`
     ),
 
-  getJobCsvDownloadUrl: (jobId: string, type: 'sent' | 'deleted') => {
-    const token = getAuthToken();
-    return `/api/jobs/${encodeURIComponent(jobId)}/csv/${type}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+  // Secure download ticket and auth-headers based downloader
+  getDownloadTicket: async (): Promise<string> => {
+    const res = await request<{ ticket: string }>('/api/auth/download-ticket', { method: 'POST' });
+    return res.ticket;
   },
 
-  getOneDriveReportDownloadUrl: (jobId: string) => {
+  downloadWithAuth: async (url: string, defaultFilename?: string): Promise<void> => {
     const token = getAuthToken();
-    return `/api/jobs/${encodeURIComponent(jobId)}/onedrive-report${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+    const headers = new Headers();
+    if (token) {
+      headers.set('Authorization', `Bearer ${token}`);
+    }
+
+    const res = await fetch(url, { headers });
+    if (!res.ok) {
+      let errMsg = `Błąd pobierania pliku: ${res.status} ${res.statusText}`;
+      try {
+        const errJson = await res.json();
+        if (errJson.error) errMsg = errJson.error;
+      } catch {}
+      throw new Error(errMsg);
+    }
+
+    let downloadName = defaultFilename;
+    const disposition = res.headers.get('Content-Disposition');
+    if (disposition) {
+      const match = /filename=["']?([^"';]+)["']?/.exec(disposition);
+      if (match && match[1]) {
+        downloadName = decodeURIComponent(match[1].trim());
+      }
+    }
+
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    if (downloadName) {
+      link.download = downloadName;
+    }
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
   },
 
-  getTaskFileDownloadUrl: (taskId: string, filename: string) => {
-    const token = getAuthToken();
-    return `/api/tasks/${encodeURIComponent(taskId)}/files/download?file=${encodeURIComponent(filename)}${token ? `&token=${encodeURIComponent(token)}` : ''}`;
+  getJobCsvDownloadUrl: (jobId: string, type: 'sent' | 'deleted', ticket?: string) => {
+    return `/api/jobs/${encodeURIComponent(jobId)}/csv/${type}${ticket ? `?ticket=${encodeURIComponent(ticket)}` : ''}`;
+  },
+
+  getOneDriveReportDownloadUrl: (jobId: string, ticket?: string) => {
+    return `/api/jobs/${encodeURIComponent(jobId)}/onedrive-report${ticket ? `?ticket=${encodeURIComponent(ticket)}` : ''}`;
+  },
+
+  getTaskFileDownloadUrl: (taskId: string, filename: string, ticket?: string) => {
+    return `/api/tasks/${encodeURIComponent(taskId)}/files/download?file=${encodeURIComponent(filename)}${ticket ? `&ticket=${encodeURIComponent(ticket)}` : ''}`;
   },
 
   // Config Export & Import
@@ -256,22 +298,25 @@ export const api = {
       body: JSON.stringify({ payload, password }),
     }),
 
-  // System / Container logs (/data/logs/logs_YYYY-MM-DD.log)
+  // System / Container logs (/data/logs/logs_YYYY-MM-DD.log) - Admin only
   getSystemLogs: (date?: string) =>
     request<{ dates: string[]; currentDate: string; logs: string; filename: string; exists: boolean }>(
       `/api/system/logs${date ? `?date=${encodeURIComponent(date)}` : ''}`
     ),
 
-  getSystemLogDownloadUrl: (date?: string) => {
-    const token = getAuthToken();
-    return `/api/system/logs/download${date ? `?date=${encodeURIComponent(date)}` : ''}${token ? `${date ? '&' : '?'}token=${encodeURIComponent(token)}` : ''}`;
+  getSystemLogDownloadUrl: (date?: string, ticket?: string) => {
+    const params = new URLSearchParams();
+    if (date) params.set('date', date);
+    if (ticket) params.set('ticket', ticket);
+    const qs = params.toString();
+    return `/api/system/logs/download${qs ? `?${qs}` : ''}`;
   },
-  // Database safety backups (/data/backupdb/)
+
+  // Database safety backups (/data/backupdb/) - Admin only
   getDatabaseBackups: () =>
     request<Array<{ filename: string; size: number; createdAt: string; filePath: string }>>('/api/system/db-backups'),
 
-  getDatabaseBackupDownloadUrl: (filename: string) => {
-    const token = getAuthToken();
-    return `/api/system/db-backups/download?file=${encodeURIComponent(filename)}${token ? `&token=${encodeURIComponent(token)}` : ''}`;
+  getDatabaseBackupDownloadUrl: (filename: string, ticket?: string) => {
+    return `/api/system/db-backups/download?file=${encodeURIComponent(filename)}${ticket ? `&ticket=${encodeURIComponent(ticket)}` : ''}`;
   },
 };
