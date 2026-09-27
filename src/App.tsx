@@ -128,7 +128,10 @@ export default function App() {
       setSystemStatus(status);
       if (status.currentUser) {
         setCurrentUser(status.currentUser);
-      } else if (!getAuthToken()) {
+      } else {
+        if (getAuthToken()) {
+          setAuthToken(null);
+        }
         setCurrentUser(null);
       }
     } catch {
@@ -234,7 +237,7 @@ export default function App() {
     return () => clearInterval(interval);
   }, [currentUser, refreshHistory]);
 
-  const handleLogout = async () => {
+  const handleLogout = useCallback(async () => {
     try {
       await api.logout();
     } catch {
@@ -243,7 +246,10 @@ export default function App() {
     setAuthToken(null);
     setCurrentUser(null);
     setCurrentTab('tasks');
-  };
+    setSessionRemainingSeconds(undefined);
+    lastActivityRef.current = Date.now();
+    lastHeartbeatRef.current = 0;
+  }, []);
 
   const getTimeoutSeconds = useCallback(() => {
     const timeout = systemStatus?.autoLogoutTimeout || '30m';
@@ -259,6 +265,16 @@ export default function App() {
         return 1800;
     }
   }, [systemStatus?.autoLogoutTimeout, systemStatus?.unlimitedDays]);
+
+  const handleLoginSuccess = useCallback((user: User) => {
+    lastActivityRef.current = Date.now();
+    lastHeartbeatRef.current = Date.now();
+    const timeoutSec = getTimeoutSeconds();
+    setSessionRemainingSeconds(timeoutSec);
+    setCurrentTab('tasks');
+    setCurrentUser(user);
+    checkStatus();
+  }, [checkStatus, getTimeoutSeconds]);
 
   const handleUserActivity = useCallback(() => {
     lastActivityRef.current = Date.now();
@@ -295,10 +311,16 @@ export default function App() {
       return;
     }
 
+    // Defensive check: If last activity reference is stale (e.g. from a previous auto-logout), reset it immediately
+    const totalSec = getTimeoutSeconds();
+    if (Date.now() - lastActivityRef.current >= totalSec * 1000) {
+      lastActivityRef.current = Date.now();
+    }
+
     const tick = () => {
-      const totalSec = getTimeoutSeconds();
+      const currentTotalSec = getTimeoutSeconds();
       const elapsedSec = Math.floor((Date.now() - lastActivityRef.current) / 1000);
-      const remaining = Math.max(0, totalSec - elapsedSec);
+      const remaining = Math.max(0, currentTotalSec - elapsedSec);
       setSessionRemainingSeconds(remaining);
 
       if (remaining <= 0) {
@@ -309,7 +331,7 @@ export default function App() {
     tick();
     const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
-  }, [currentUser, getTimeoutSeconds]);
+  }, [currentUser, getTimeoutSeconds, handleLogout]);
 
   const handleRefreshSession = useCallback(async () => {
     lastActivityRef.current = Date.now();
@@ -489,11 +511,7 @@ export default function App() {
       <div className="min-h-screen bg-neutral-50 dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 font-sans">
         <AdminSetup
           lang={lang}
-          onSetupSuccess={user => {
-            setCurrentTab('tasks');
-            setCurrentUser(user);
-            checkStatus();
-          }}
+          onSetupSuccess={handleLoginSuccess}
         />
       </div>
     );
@@ -505,11 +523,7 @@ export default function App() {
       <div className="min-h-screen bg-neutral-50 dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 font-sans">
         <LoginModal
           lang={lang}
-          onLoginSuccess={user => {
-            setCurrentTab('tasks');
-            setCurrentUser(user);
-            checkStatus();
-          }}
+          onLoginSuccess={handleLoginSuccess}
         />
       </div>
     );
