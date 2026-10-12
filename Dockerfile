@@ -11,10 +11,12 @@ RUN npm run build
 # Runtime container
 FROM node:22-alpine
 
-# Install rsync, rclone, tzdata, ca-certificates, bash
+# Copy latest official rclone binary directly from official multi-arch image
+COPY --from=rclone/rclone:latest /usr/local/bin/rclone /usr/local/bin/rclone
+
+# Install rsync, tzdata, ca-certificates, bash, openssh-client
 RUN apk add --no-cache \
     rsync \
-    rclone \
     bash \
     ca-certificates \
     tzdata \

@@ -27,6 +27,8 @@
 - **Zaawansowane reguły wykluczeń (Exclude Filters):**
   - Obsługa precyzyjnych masek plików i katalogów dla silników `rsync` i `rclone` (np. `*.tmp`, `/katalog/*.tmp`, `katalog/`, `*_TRASH/`).
   - Dedykowana dokumentacja i baza przykładów znajduje się w pliku [`EXCLUDE_FILTERS.md`](./EXCLUDE_FILTERS.md).
+- **Optymalizacja chmury Drime (drime.cloud):**
+  - Praktyczny poradnik konfiguracji, optymalizacji flag oraz rozwiązywania problemów (błędy 422, kosz, znaki specjalne) znajduje się w pliku [`DRIME_RCLONE_GUIDE.md`](./DRIME_RCLONE_GUIDE.md).
 - **Bezpieczeństwo operacyjne i zarządzanie sesją:**
   - **Licznik czasu sesji na żywo:** umieszczony na górnym pasku nawigacyjnym (między zmianą hasła a wylogowaniem), z dynamiczną kolorystyką (ostrzeżenie poniżej 5 min, pulsowanie poniżej 2 min).
   - **Auto-wylogowanie i przedłużanie przy aktywności:** konfigurowalny czas bezczynności (30m, 1h, 3h lub brak limitu); każdy ruch, kliknięcie lub akcja automatycznie odnawia sesję w tle (heartbeat), z opcją natychmiastowego odświeżenia kliknięciem w licznik.
