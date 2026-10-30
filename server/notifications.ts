@@ -89,6 +89,36 @@ export function sanitizeNtfyHeader(headerVal: string): string {
   return asciiClean.trim() || 'SyncVault Notification';
 }
 
+/**
+ * Resilient fetch wrapper that automatically retries on transient network and DNS errors
+ * (e.g. getaddrinfo EAI_AGAIN, ECONNRESET, ETIMEDOUT, socket hang up) with exponential backoff.
+ */
+async function fetchWithRetry(
+  url: string,
+  options: RequestInit,
+  retries = 3,
+  delayMs = 2000
+): Promise<Response> {
+  let lastError: any;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(url, options);
+      return res;
+    } catch (err: any) {
+      lastError = err;
+      if (attempt < retries) {
+        const errorDetail = err?.cause?.code || err?.code || err?.message || 'unknown error';
+        console.warn(
+          `[Notification] Request to ${url.split('?')[0].replace(/api\/webhooks\/[^\/]+\/[^\/]+/, 'api/webhooks/***')} failed on attempt ${attempt}/${retries} (${errorDetail}). Retrying in ${delayMs}ms...`
+        );
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        delayMs = Math.round(delayMs * 1.5);
+      }
+    }
+  }
+  throw lastError;
+}
+
 export async function sendJobNotifications(job: JobExecution, task: Task): Promise<void> {
   const settings: GlobalSettings = getSettings();
   const taskNotif = task.notifications || {};
@@ -214,7 +244,7 @@ export async function sendJobNotifications(job: JobExecution, task: Task): Promi
         ],
       };
 
-      await fetch(discordUrl, {
+      await fetchWithRetry(discordUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -251,7 +281,7 @@ export async function sendJobNotifications(job: JobExecution, task: Task): Promi
       const ntfyUsesMonospace = needsMonospaceRendering(ntfyMessage);
       const ntfyBody = ntfyUsesMonospace ? '```\n' + ntfyMessage + '\n```' : ntfyMessage;
 
-      await fetch(ntfyUrl, {
+      await fetchWithRetry(ntfyUrl, {
         method: 'POST',
         headers: {
           Title: sanitizedTitle,
@@ -391,7 +421,7 @@ export async function sendTestNotification(
   if (type === 'discord') {
     const url = customTarget || settings.notifications.discordWebhookUrl;
     if (!url) throw new Error('Brak skonfigurowanego Discord Webhook URL');
-    const res = await fetch(url, {
+    const res = await fetchWithRetry(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -425,7 +455,7 @@ export async function sendTestNotification(
       ? renderPlaceholders(settings.notifications.ntfyTitleTemplate, testVars)
       : 'SyncVault - Test Powiadomienia';
 
-    const res = await fetch(url, {
+    const res = await fetchWithRetry(url, {
       method: 'POST',
       headers: {
         Title: sanitizeNtfyHeader(rawTitle),
