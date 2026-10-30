@@ -95,6 +95,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
   const SCHEDULES_PER_PAGE = 5;
   const [schedulePage, setSchedulePage] = useState(0);
   const [runAfterTaskId, setRunAfterTaskId] = useState<string | null>(null);
+  const [runAfterOnFailure, setRunAfterOnFailure] = useState<boolean>(true);
   const [filterInput, setFilterInput] = useState('');
   const [excludeFilters, setExcludeFilters] = useState<string[]>(['*.tmp', '*.log']);
   const [restoreEnabled, setRestoreEnabled] = useState(true);
@@ -168,6 +169,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
       setScheduleEnabled(initialTask.scheduleEnabled || false);
       setSchedules(initialTask.schedules || []);
       setRunAfterTaskId(initialTask.runAfterTaskId || null);
+      setRunAfterOnFailure(initialTask.runAfterOnFailure !== false);
       setExcludeFilters(initialTask.excludeFilters || []);
       setRestoreEnabled(initialTask.restoreEnabled !== false);
       setLogRetentionDays(
@@ -203,6 +205,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
         { id: generateUUID(), type: 'daily', time: '02:00', enabled: true },
       ]);
       setRunAfterTaskId(null);
+      setRunAfterOnFailure(true);
       setExcludeFilters(['*.tmp', '*.log', 'node_modules/', '.cache/']);
       setRestoreEnabled(true);
       setLogRetentionDays('');
@@ -425,6 +428,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
       scheduleEnabled,
       schedules: schedules.slice(0, 30),
       runAfterTaskId: runAfterTaskId || null,
+      runAfterOnFailure: runAfterTaskId ? runAfterOnFailure : true,
       excludeFilters,
       restoreEnabled,
       logRetentionDays: logRetentionDays === '' ? null : Number(logRetentionDays),
@@ -1170,29 +1174,53 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
               </div>
 
               {/* Chaining: "możliwość ustawienia uruchom po zakończeniu innego zadania" */}
-              <div className="p-4 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-900/50 space-y-2">
-                <label className="block text-xs font-bold uppercase tracking-wider text-neutral-700 dark:text-neutral-300">
-                  {t.taskModal.runAfterLabel}
-                </label>
-                <select
-                  value={runAfterTaskId || ''}
-                  onChange={e => setRunAfterTaskId(e.target.value ? e.target.value : null)}
-                  className="w-full px-3 py-2 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                >
-                  <option value="">{t.taskModal.runAfterNone}</option>
-                  {existingTasks
-                    .filter(t => !initialTask || t.id !== initialTask.id)
-                    .map((t, idx) => (
-                      <option key={t.id} value={t.id}>
-                        [#{t.taskNumber ?? idx + 1}] {t.name} ({t.engine} • {t.type})
-                      </option>
-                    ))}
-                </select>
-                <p className="text-xs text-neutral-500">
-                  {lang === 'pl'
-                    ? 'Gdy wybrane nadrzędne zadanie zakończy się sukcesem, to zadanie zostanie automatycznie uruchomione w kolejce.'
-                    : 'When the selected parent task completes successfully, this task will be triggered automatically.'}
-                </p>
+              <div className="p-4 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-900/50 space-y-3">
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-neutral-700 dark:text-neutral-300 mb-1.5">
+                    {t.taskModal.runAfterLabel}
+                  </label>
+                  <select
+                    value={runAfterTaskId || ''}
+                    onChange={e => setRunAfterTaskId(e.target.value ? e.target.value : null)}
+                    className="w-full px-3 py-2 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                  >
+                    <option value="">{t.taskModal.runAfterNone}</option>
+                    {existingTasks
+                      .filter(t => !initialTask || t.id !== initialTask.id)
+                      .map((t, idx) => (
+                        <option key={t.id} value={t.id}>
+                          [#{t.taskNumber ?? idx + 1}] {t.name} ({t.engine} • {t.type})
+                        </option>
+                      ))}
+                  </select>
+                  <p className="text-xs text-neutral-500 mt-1">
+                    {lang === 'pl'
+                      ? 'Gdy wybrane nadrzędne zadanie zakończy się, to zadanie zostanie automatycznie uruchomione w kolejce.'
+                      : 'When the selected parent task completes, this task will be triggered automatically.'}
+                  </p>
+                </div>
+
+                {runAfterTaskId && (
+                  <div className="p-3.5 rounded-xl border border-blue-200 dark:border-blue-900/50 bg-blue-50/50 dark:bg-blue-950/30 flex items-center justify-between gap-3 transition-all">
+                    <div className="pr-2">
+                      <span className="text-xs font-bold text-neutral-900 dark:text-white block">
+                        {t.taskModal.runAfterOnFailureLabel}
+                      </span>
+                      <p className="text-[11px] text-neutral-600 dark:text-neutral-400 mt-0.5">
+                        {t.taskModal.runAfterOnFailureHelp}
+                      </p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                      <input
+                        type="checkbox"
+                        checked={runAfterOnFailure}
+                        onChange={e => setRunAfterOnFailure(e.target.checked)}
+                        className="sr-only peer"
+                      />
+                      <div className="w-10 h-5 bg-neutral-300 peer-focus:outline-none rounded-full peer dark:bg-neutral-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-neutral-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                    </label>
+                  </div>
+                )}
               </div>
             </div>
           )}

@@ -469,10 +469,19 @@ export default function App() {
     }
   };
 
-  const handleStopJob = async (jobId: string) => {
+  const handleStopJob = async (jobId: string, runNextChained?: boolean) => {
     try {
-      await api.stopJob(jobId);
+      await api.stopJob(jobId, runNextChained);
       refreshJobs();
+      if (runNextChained) {
+        showToast({
+          type: 'success',
+          message:
+            lang === 'pl'
+              ? 'Zadanie zostało zatrzymane. Kolejne zaplanowane zadanie zostanie uruchomione w kolejce.'
+              : 'Job stopped. The next chained task will be executed in queue.',
+        });
+      }
     } catch (err: any) {
       alert(`Błąd zatrzymywania zadania: ${err.message}`);
     }
@@ -569,6 +578,7 @@ export default function App() {
           <JobMonitorView
             lang={lang}
             jobs={jobs}
+            tasks={tasks}
             onStopJob={handleStopJob}
             onViewLogs={handleViewLogs}
           />

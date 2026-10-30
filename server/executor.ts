@@ -79,6 +79,8 @@ interface ActiveJobContext {
   liveDeletedMap: Map<string, CsvReportItem>;
   currentPairHadOneDriveLimitError?: boolean;
   oneDriveLongPathsSet?: Set<string>;
+  runNextChained?: boolean;
+  finished?: boolean;
 }
 
 function parseFormattedSizeToBytes(numStr: string, unitStr?: string): number {
@@ -344,7 +346,7 @@ export function cancelAndRemoveTaskJobs(taskId: string, actorUsername: string = 
   }
 }
 
-export function stopJob(jobId: string, actorUsername: string): boolean {
+export function stopJob(jobId: string, actorUsername: string, runNextChained: boolean = false): boolean {
   // Check queued first
   const qIdx = queuedJobs.findIndex(q => q.job.id === jobId);
   if (qIdx !== -1) {
@@ -354,6 +356,10 @@ export function stopJob(jobId: string, actorUsername: string): boolean {
     q.job.error = 'Zadanie anulowane przed uruchomieniem';
     addJobHistory(q.job);
     addAuditLog(actorUsername, 'STOP_JOB', `Cancelled queued job for task: ${q.task.name}`);
+    if (runNextChained && q.job.mode === 'backup') {
+      triggerChainedTasks(q.task.id, 'stopped');
+    }
+    processQueue();
     return true;
   }
 
@@ -361,6 +367,7 @@ export function stopJob(jobId: string, actorUsername: string): boolean {
   if (!ctx) return false;
 
   ctx.cancelled = true;
+  ctx.runNextChained = runNextChained;
   ctx.job.status = 'stopping';
   addAuditLog(actorUsername, 'STOP_JOB', `Stopping active job: ${ctx.task.name} (${jobId})`);
 
@@ -1212,6 +1219,9 @@ function executeSimulatedJob(ctx: ActiveJobContext): void {
 }
 
 function finishJob(ctx: ActiveJobContext, finalStatus: 'completed' | 'failed' | 'stopped', errorMsg?: string): void {
+  if (ctx.finished) return;
+  ctx.finished = true;
+
   const { job, task, logFilePath } = ctx;
 
   job.status = finalStatus;
@@ -1320,21 +1330,42 @@ function finishJob(ctx: ActiveJobContext, finalStatus: 'completed' | 'failed' | 
   cleanupDatabaseBackups();
 
   // Chained task execution: "uruchom po zakończeniu innego zadania - kolejkowanie"
-  if (finalStatus === 'completed' && job.mode === 'backup') {
-    triggerChainedTasks(task.id);
+  if (job.mode === 'backup') {
+    if (finalStatus === 'completed') {
+      triggerChainedTasks(task.id, 'completed');
+    } else if (finalStatus === 'failed') {
+      triggerChainedTasks(task.id, 'failed');
+    } else if (finalStatus === 'stopped' && ctx.runNextChained) {
+      triggerChainedTasks(task.id, 'stopped');
+    }
   }
 
   // Process next queued job
   processQueue();
 }
 
-function triggerChainedTasks(finishedTaskId: string): void {
+function triggerChainedTasks(finishedTaskId: string, status: 'completed' | 'failed' | 'stopped' = 'completed'): void {
   const allTasks = getTasks();
   const chained = allTasks.filter(t => t.runAfterTaskId === finishedTaskId);
 
   for (const chainedTask of chained) {
+    if (status === 'failed') {
+      // User switch: "przy niepowodzeniu kontynuuj - domyślnie: TAK"
+      const continueOnFail = chainedTask.runAfterOnFailure !== false;
+      if (!continueOnFail) {
+        console.log(`[Chaining] Skipping follow-up task "${chainedTask.name}" because parent task ${finishedTaskId} failed and runAfterOnFailure=false.`);
+        continue;
+      }
+    }
+
     try {
-      console.log(`[Chaining] Triggering queued follow-up task "${chainedTask.name}" after completion of task ${finishedTaskId}`);
+      const reasonMap: Record<string, string> = {
+        completed: 'pomyślnym ukończeniu',
+        failed: 'niepowodzeniu (kontynuacja włączona)',
+        stopped: 'ręcznym zatrzymaniu (wybrano uruchomienie kolejnego)',
+      };
+      const reason = reasonMap[status] || status;
+      console.log(`[Chaining] Triggering queued follow-up task "${chainedTask.name}" po ${reason} zadania nadrzędnego ${finishedTaskId}`);
       enqueueTask(chainedTask, 'backup', undefined, `chain:${finishedTaskId}`);
     } catch (err: any) {
       console.warn(`[Chaining] Could not start chained task ${chainedTask.name}: ${err.message}`);

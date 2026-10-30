@@ -157,8 +157,11 @@ export const api = {
   // Jobs
   getJobs: () => request<JobExecution[]>('/api/jobs'),
 
-  stopJob: (id: string) =>
-    request<{ success: boolean }>(`/api/jobs/${id}/stop`, { method: 'POST' }),
+  stopJob: (id: string, runNextChained?: boolean) =>
+    request<{ success: boolean }>(`/api/jobs/${id}/stop`, {
+      method: 'POST',
+      body: JSON.stringify({ runNextChained }),
+    }),
 
   getHistory: (limit?: number) =>
     request<JobExecution[]>(`/api/history${limit ? `?limit=${limit}` : ''}`),

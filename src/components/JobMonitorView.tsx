@@ -12,14 +12,15 @@ import {
   Loader2,
   StopCircle,
 } from 'lucide-react';
-import { JobExecution } from '../types.ts';
+import { JobExecution, Task } from '../types.ts';
 import { Language, translations } from '../i18n.ts';
 import { api } from '../api.ts';
 
 interface JobMonitorViewProps {
   lang: Language;
   jobs: JobExecution[];
-  onStopJob: (jobId: string) => void;
+  tasks?: Task[];
+  onStopJob: (jobId: string, runNextChained?: boolean) => void;
   onViewLogs: (job: JobExecution) => void;
 }
 
@@ -34,20 +35,25 @@ function formatBytes(bytes: number): string {
 export const JobMonitorView: React.FC<JobMonitorViewProps> = ({
   lang,
   jobs,
+  tasks,
   onStopJob,
   onViewLogs,
 }) => {
   const t = translations[lang];
   const [stoppingJobId, setStoppingJobId] = useState<string | null>(null);
-  const [jobToStop, setJobToStop] = useState<{ id: string; name: string } | null>(null);
+  const [jobToStop, setJobToStop] = useState<{ id: string; name: string; taskId: string } | null>(null);
+  const [runNextChainedOnStop, setRunNextChainedOnStop] = useState<boolean>(false);
 
   const activeOrQueuedJobs = jobs.filter(j => j.status === 'running' || j.status === 'queued' || j.status === 'stopping');
   const recentCompletedJobs = jobs.filter(j => j.status !== 'running' && j.status !== 'queued' && j.status !== 'stopping');
 
-  const handleConfirmStop = (jobId: string) => {
+  const chainedTasksForStop = jobToStop ? (tasks?.filter(t => t.runAfterTaskId === jobToStop.taskId) || []) : [];
+
+  const handleConfirmStop = (jobId: string, runNextChained?: boolean) => {
     setStoppingJobId(jobId);
-    onStopJob(jobId);
+    onStopJob(jobId, runNextChained);
     setJobToStop(null);
+    setRunNextChainedOnStop(false);
     setTimeout(() => setStoppingJobId(null), 2000);
   };
 
@@ -176,7 +182,10 @@ export const JobMonitorView: React.FC<JobMonitorViewProps> = ({
                     {getStatusBadge(job.status, job)}
 
                     <button
-                      onClick={() => setJobToStop({ id: job.id, name: job.taskName })}
+                      onClick={() => {
+                        setRunNextChainedOnStop(false);
+                        setJobToStop({ id: job.id, name: job.taskName, taskId: job.taskId });
+                      }}
                       disabled={stoppingJobId === job.id || job.status === 'stopping'}
                       className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 text-xs font-semibold transition-colors disabled:opacity-50"
                       title={t.jobMonitor.stopJob}
@@ -407,21 +416,78 @@ export const JobMonitorView: React.FC<JobMonitorViewProps> = ({
               <span className="font-mono font-bold text-neutral-900 dark:text-white">{jobToStop.name}</span>
             </div>
 
+            {chainedTasksForStop.length > 0 && (
+              <div className="p-3.5 rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/70 dark:bg-amber-950/30 space-y-2.5">
+                <div className="flex items-center gap-2 text-amber-800 dark:text-amber-300 font-bold text-xs">
+                  <Clock className="w-4 h-4 shrink-0" />
+                  <span>
+                    {lang === 'pl'
+                      ? `Zaplanowane kolejne zadanie w kolejce (${chainedTasksForStop.length}):`
+                      : `Chained follow-up task detected (${chainedTasksForStop.length}):`}
+                  </span>
+                </div>
+                <div className="space-y-1 pl-6 text-xs text-neutral-700 dark:text-neutral-300">
+                  {chainedTasksForStop.map(ct => (
+                    <div key={ct.id} className="flex items-center gap-1.5">
+                      <span className="font-mono text-blue-600 dark:text-blue-400 font-bold">
+                        #{ct.taskNumber ?? ct.id.slice(0, 6)}
+                      </span>
+                      <span className="font-semibold">{ct.name}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="pt-2 border-t border-amber-200 dark:border-amber-900/40 flex items-center justify-between gap-3">
+                  <div>
+                    <span className="text-xs font-bold text-neutral-900 dark:text-white block">
+                      {lang === 'pl'
+                        ? 'Wykonać kolejne zaplanowane zadanie?'
+                        : 'Execute the next scheduled task?'}
+                    </span>
+                    <p className="text-[11px] text-neutral-600 dark:text-neutral-400">
+                      {lang === 'pl'
+                        ? (runNextChainedOnStop
+                            ? 'Tak — po zatrzymaniu tego zadania uruchom kolejne'
+                            : 'Nie — zatrzymaj i anuluj uruchomienie kolejnego zadania')
+                        : (runNextChainedOnStop
+                            ? 'Yes — trigger next task after stopping'
+                            : 'No — stop without triggering next task')}
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                    <input
+                      type="checkbox"
+                      checked={runNextChainedOnStop}
+                      onChange={e => setRunNextChainedOnStop(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-10 h-5 bg-neutral-300 peer-focus:outline-none rounded-full peer dark:bg-neutral-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-neutral-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                  </label>
+                </div>
+              </div>
+            )}
+
             <div className="flex items-center justify-end gap-2 pt-2">
               <button
                 type="button"
-                onClick={() => setJobToStop(null)}
+                onClick={() => {
+                  setJobToStop(null);
+                  setRunNextChainedOnStop(false);
+                }}
                 className="px-4 py-2 rounded-xl text-xs font-semibold text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
               >
                 {t.common.cancel}
               </button>
               <button
                 type="button"
-                onClick={() => handleConfirmStop(jobToStop.id)}
+                onClick={() => handleConfirmStop(jobToStop.id, runNextChainedOnStop)}
                 className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold shadow-sm transition-colors flex items-center gap-1.5"
               >
                 <Square className="w-3.5 h-3.5 fill-current" />
-                <span>{lang === 'pl' ? 'Zatrzymaj zadanie' : 'Stop Job'}</span>
+                <span>
+                  {lang === 'pl'
+                    ? (runNextChainedOnStop ? 'Zatrzymaj i uruchom kolejne' : 'Zatrzymaj zadanie')
+                    : (runNextChainedOnStop ? 'Stop & Run Next' : 'Stop Job')}
+                </span>
               </button>
             </div>
           </div>

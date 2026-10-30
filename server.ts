@@ -360,6 +360,7 @@ async function startServer() {
         },
       ],
       runAfterTaskId: null,
+      runAfterOnFailure: true,
       excludeFilters: ['*.tmp', '*.log', 'node_modules/', '.cache/'],
       restoreEnabled: true,
       logRetentionDays: 30,
@@ -732,6 +733,7 @@ async function startServer() {
         enabled: s.enabled !== false,
       })),
       runAfterTaskId: data.runAfterTaskId || null,
+      runAfterOnFailure: data.runAfterOnFailure !== undefined ? Boolean(data.runAfterOnFailure) : true,
       excludeFilters: Array.isArray(data.excludeFilters) ? data.excludeFilters : [],
       restoreEnabled: data.restoreEnabled !== false,
       logRetentionDays: data.logRetentionDays !== undefined ? data.logRetentionDays : null,
@@ -791,6 +793,7 @@ async function startServer() {
         enabled: s.enabled !== false,
       })),
       runAfterTaskId: data.runAfterTaskId !== undefined ? data.runAfterTaskId : task.runAfterTaskId,
+      runAfterOnFailure: data.runAfterOnFailure !== undefined ? Boolean(data.runAfterOnFailure) : (task.runAfterOnFailure ?? true),
       excludeFilters: Array.isArray(data.excludeFilters) ? data.excludeFilters : task.excludeFilters,
       restoreEnabled: data.restoreEnabled !== undefined ? data.restoreEnabled : task.restoreEnabled,
       logRetentionDays: data.logRetentionDays !== undefined ? data.logRetentionDays : task.logRetentionDays,
@@ -947,7 +950,8 @@ async function startServer() {
 
   app.post('/api/jobs/:id/stop', requireAuth, (req: Request, res: Response) => {
     const user = (req as any).user;
-    const success = stopJob(req.params.id, user.username);
+    const { runNextChained } = req.body || {};
+    const success = stopJob(req.params.id, user.username, Boolean(runNextChained));
     if (success) {
       res.json({ success: true });
     } else {

@@ -64,6 +64,7 @@ export interface Task {
   scheduleEnabled: boolean;
   schedules: TaskSchedule[];
   runAfterTaskId?: string | null;
+  runAfterOnFailure?: boolean; // domyślnie true (TAK) - czy kontynuować kolejne zadanie w przypadku błędu poprzednika
   excludeFilters: string[];
   restoreEnabled: boolean;
   logRetentionDays?: number | null; // null = use global
