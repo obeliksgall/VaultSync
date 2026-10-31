@@ -322,4 +322,20 @@ export const api = {
   getDatabaseBackupDownloadUrl: (filename: string, ticket?: string) => {
     return `/api/system/db-backups/download?file=${encodeURIComponent(filename)}${ticket ? `&ticket=${encodeURIComponent(ticket)}` : ''}`;
   },
+
+  // Dynamic help flags from installed rclone/rsync binary
+  getSystemFlagsHelp: (engine: 'rclone' | 'rsync') =>
+    request<{
+      available: boolean;
+      engine: 'rclone' | 'rsync';
+      version?: string;
+      flags: Array<{
+        flag: string;
+        flagBase: string;
+        short?: string;
+        paramPlaceholder?: string;
+        description: string;
+        isDangerous?: boolean;
+      }>;
+    }>(`/api/system/flags-help?engine=${engine}`),
 };

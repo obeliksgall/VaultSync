@@ -1181,9 +1181,33 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </div>
 
                   <div>
-                    <label className="block text-[11px] text-neutral-500 mb-1">
-                      SMTP Password (SMTP_PASS)
-                    </label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-[11px] text-neutral-500">
+                        SMTP Password (SMTP_PASS)
+                      </label>
+                      {settings.notifications?.smtpPass ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSettings({
+                              ...settings,
+                              notifications: {
+                                ...settings.notifications,
+                                smtpPass: '',
+                                clearSmtpPass: true,
+                              },
+                            });
+                          }}
+                          className="text-[10px] text-rose-600 dark:text-rose-400 hover:underline"
+                        >
+                          {lang === 'pl' ? 'Wyczyść hasło' : 'Clear password'}
+                        </button>
+                      ) : settings.notifications?.clearSmtpPass ? (
+                        <span className="text-[10px] text-amber-600 dark:text-amber-400">
+                          {lang === 'pl' ? 'Hasło zostanie usunięte po zapisie' : 'Password will be cleared on save'}
+                        </span>
+                      ) : null}
+                    </div>
                     <div className="relative">
                       <input
                         type={showSmtpPassword ? 'text' : 'password'}
@@ -1194,10 +1218,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                             notifications: {
                               ...settings.notifications,
                               smtpPass: e.target.value,
+                              clearSmtpPass: e.target.value === '',
                             },
                           })
                         }
-                        placeholder="••••••••••••"
+                        placeholder={
+                          settings.notifications?.clearSmtpPass
+                            ? (lang === 'pl' ? 'Brak hasła (wyczyszczone)' : 'No password (cleared)')
+                            : '••••••••••••'
+                        }
                         className="w-full px-3 py-1.5 pr-8 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white text-xs font-mono"
                       />
                       <button
@@ -1399,6 +1428,122 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         },
                       });
                     })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Sekcja: Ustawienia odporności, ponawiania prób i limitów czasu */}
+              <div className="p-4 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-800/30 space-y-4">
+                <div className="flex items-center gap-2">
+                  <RefreshCw className="w-4 h-4 text-blue-500" />
+                  <div>
+                    <h4 className="text-xs font-bold text-neutral-900 dark:text-white">
+                      {lang === 'pl'
+                        ? 'Odporność sieciowa, ponawianie prób i limity czasu (Retry & Timeout)'
+                        : 'Network Resilience, Retries & Timeouts'}
+                    </h4>
+                    <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-0.5">
+                      {lang === 'pl'
+                        ? 'Konfiguracja obsługi przejściowych błędów sieciowych (np. DNS timeout, HTTP 429 Rate Limit, 5xx) dla Discord, ntfy i SMTP.'
+                        : 'Configuration for transient network failures (DNS glitches, HTTP 429 rate limit, 5xx) across Discord, ntfy and SMTP.'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
+                  {/* retryAttempts */}
+                  <div className="p-3 rounded-lg border border-neutral-200 dark:border-neutral-700/60 bg-white dark:bg-neutral-900 space-y-1.5">
+                    <label className="block text-xs font-semibold text-neutral-900 dark:text-white">
+                      {lang === 'pl' ? 'Liczba prób (Attempts)' : 'Retry Attempts'}
+                    </label>
+                    <p className="text-[10px] text-neutral-400">
+                      {lang === 'pl'
+                        ? 'Ile razy ponawiać wysyłkę przy błędzie (1 - 10, domyślnie: 3)'
+                        : 'Number of dispatch attempts on failure (1 - 10, default: 3)'}
+                    </p>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        min={1}
+                        max={10}
+                        value={settings.notifications?.retryAttempts ?? 3}
+                        onChange={e => {
+                          const val = parseInt(e.target.value, 10);
+                          setSettings({
+                            ...settings,
+                            notifications: {
+                              ...settings.notifications,
+                              retryAttempts: isNaN(val) ? 3 : Math.max(1, Math.min(10, val)),
+                            },
+                          });
+                        }}
+                        className="w-full px-3 py-1.5 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white text-xs font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  {/* retryDelaySeconds */}
+                  <div className="p-3 rounded-lg border border-neutral-200 dark:border-neutral-700/60 bg-white dark:bg-neutral-900 space-y-1.5">
+                    <label className="block text-xs font-semibold text-neutral-900 dark:text-white">
+                      {lang === 'pl' ? 'Opóźnienie ponowienia (Delay)' : 'Retry Delay'}
+                    </label>
+                    <p className="text-[10px] text-neutral-400">
+                      {lang === 'pl'
+                        ? 'Czas oczekiwania przed kolejną próbą (1 - 30s, domyślnie: 2s)'
+                        : 'Wait time before subsequent retry (1 - 30s, default: 2s)'}
+                    </p>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        min={1}
+                        max={30}
+                        value={settings.notifications?.retryDelaySeconds ?? 2}
+                        onChange={e => {
+                          const val = parseInt(e.target.value, 10);
+                          setSettings({
+                            ...settings,
+                            notifications: {
+                              ...settings.notifications,
+                              retryDelaySeconds: isNaN(val) ? 2 : Math.max(1, Math.min(30, val)),
+                            },
+                          });
+                        }}
+                        className="w-full pl-3 pr-8 py-1.5 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white text-xs font-mono"
+                      />
+                      <span className="absolute right-2.5 top-1.5 text-xs text-neutral-400 pointer-events-none">s</span>
+                    </div>
+                  </div>
+
+                  {/* timeoutSeconds */}
+                  <div className="p-3 rounded-lg border border-neutral-200 dark:border-neutral-700/60 bg-white dark:bg-neutral-900 space-y-1.5">
+                    <label className="block text-xs font-semibold text-neutral-900 dark:text-white">
+                      {lang === 'pl' ? 'Limit czasu żądania (Timeout)' : 'Request Timeout'}
+                    </label>
+                    <p className="text-[10px] text-neutral-400">
+                      {lang === 'pl'
+                        ? 'Maksymalny czas oczekiwania na odpowiedź (3 - 60s, domyślnie: 10s)'
+                        : 'Maximum wait time per request (3 - 60s, default: 10s)'}
+                    </p>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        min={3}
+                        max={60}
+                        value={settings.notifications?.timeoutSeconds ?? 10}
+                        onChange={e => {
+                          const val = parseInt(e.target.value, 10);
+                          setSettings({
+                            ...settings,
+                            notifications: {
+                              ...settings.notifications,
+                              timeoutSeconds: isNaN(val) ? 10 : Math.max(3, Math.min(60, val)),
+                            },
+                          });
+                        }}
+                        className="w-full pl-3 pr-8 py-1.5 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white text-xs font-mono"
+                      />
+                      <span className="absolute right-2.5 top-1.5 text-xs text-neutral-400 pointer-events-none">s</span>
+                    </div>
                   </div>
                 </div>
               </div>

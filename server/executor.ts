@@ -118,6 +118,19 @@ const queuedJobs: { job: JobExecution; task: Task; restoredPairIds?: string[] }[
 // start - regardless of what triggered it.
 let lastJobFinishTime = 0;
 let queueDelayTimer: NodeJS.Timeout | null = null;
+let isShuttingDown = false;
+
+export function isServerShuttingDown(): boolean {
+  return isShuttingDown;
+}
+
+export function setIsShuttingDown(val: boolean): void {
+  isShuttingDown = val;
+  if (val && queueDelayTimer) {
+    clearTimeout(queueDelayTimer);
+    queueDelayTimer = null;
+  }
+}
 
 // Check command availability
 export function checkToolAvailability(): { rclone: boolean; rsync: boolean; rcloneVer?: string; rsyncVer?: string } {
@@ -145,15 +158,130 @@ export function checkToolAvailability(): { rclone: boolean; rsync: boolean; rclo
   return { rclone, rsync, rcloneVer, rsyncVer };
 }
 
-// Sanitize rclone-specific flags when running under rsync to prevent code 1 syntax/unknown option errors
-function sanitizeRsyncFlags(customFlagsStr: string, onWarning?: (warning: string) => void): string[] {
-  const flags = customFlagsStr.split(' ').filter(Boolean);
+/**
+ * Splits command line arguments string into array, preserving quoted substrings.
+ * Example: '--exclude "*.tmp" -v' -> ['--exclude', '*.tmp', '-v']
+ */
+export function parseCommandLineArgs(input: string): string[] {
+  const args: string[] = [];
+  let current = '';
+  let inQuote: '"' | "'" | null = null;
+
+  for (let i = 0; i < input.length; i++) {
+    const char = input[i];
+    if (inQuote) {
+      if (char === inQuote) {
+        inQuote = null;
+      } else {
+        current += char;
+      }
+    } else if (char === '"' || char === "'") {
+      inQuote = char;
+    } else if (/\s/.test(char)) {
+      if (current.length > 0) {
+        args.push(current);
+        current = '';
+      }
+    } else {
+      current += char;
+    }
+  }
+  if (current.length > 0) {
+    args.push(current);
+  }
+  return args;
+}
+
+const DANGEROUS_RCLONE_FLAGS = new Set([
+  '--password-command',
+  '--ask-password',
+  '--rc-addr',
+  '--rc-web-gui',
+  '--rc-web-gui-update',
+  '--rc-allow-origin',
+  '--rc-serve',
+  '--sftp-ssh',
+  '--webdav-bearer-token-command',
+  '--config',
+  '--log-file',
+]);
+
+export function sanitizeRcloneFlags(customFlagsStr: string, onWarning?: (warning: string) => void): string[] {
+  const flags = parseCommandLineArgs(customFlagsStr);
+  const safeFlags: string[] = [];
+
+  for (let i = 0; i < flags.length; i++) {
+    const flag = flags[i];
+    const flagLower = flag.toLowerCase();
+    const flagBase = flagLower.split('=')[0];
+
+    const isDangerous =
+      DANGEROUS_RCLONE_FLAGS.has(flagBase) ||
+      flagBase.startsWith('--rc-') ||
+      flagBase.startsWith('--password-command') ||
+      flagBase.endsWith('-command') ||
+      flagBase.startsWith('--sftp-ssh') ||
+      flagBase.startsWith('--config') ||
+      flagBase.startsWith('--log-file');
+
+    if (isDangerous) {
+      if (onWarning) {
+        onWarning(`[SyncVault Security] Zablokowano niedozwoloną flagę rclone ze względów bezpieczeństwa: '${flag}'`);
+      }
+      if (i + 1 < flags.length && !flags[i + 1].startsWith('-') && !flag.includes('=')) {
+        i++;
+      }
+      continue;
+    }
+    safeFlags.push(flag);
+  }
+  return safeFlags;
+}
+
+const DANGEROUS_RSYNC_FLAGS = new Set([
+  '--rsh',
+  '-e',
+  '--exec',
+  '--rsync-path',
+  '--log-file',
+  '--daemon',
+]);
+
+// Sanitize rclone-specific flags and dangerous execution flags when running under rsync
+export function sanitizeRsyncFlags(customFlagsStr: string, onWarning?: (warning: string) => void): string[] {
+  const flags = parseCommandLineArgs(customFlagsStr);
   const safeFlags: string[] = [];
   const rcloneValueFlags = new Set(['--transfers', '--checkers', '--drive-chunk-size', '--s3-chunk-size', '--buffer-size', '--tpslimit', '--max-backlog']);
   const rcloneBooleanFlags = new Set(['--fast-list', '--ignore-checksum', '--no-traverse']);
 
   for (let i = 0; i < flags.length; i++) {
     const flag = flags[i];
+    const flagLower = flag.toLowerCase();
+    const flagBase = flagLower.split('=')[0];
+
+    // Check long dangerous flags or short option clusters containing 'e' (e.g. -e, -avze, -essh)
+    const isDangerousLong =
+      DANGEROUS_RSYNC_FLAGS.has(flagBase) ||
+      flagBase.startsWith('--rsh') ||
+      flagBase.startsWith('--rsync-path') ||
+      flagBase.startsWith('--exec') ||
+      flagBase.startsWith('--log-file') ||
+      flagBase.startsWith('--daemon');
+
+    const isShortOptionClusterWithE = /^-[a-zA-Z]*e/.test(flag);
+
+    if (isDangerousLong || isShortOptionClusterWithE) {
+      if (onWarning) {
+        onWarning(`[SyncVault Security] Zablokowano niedozwoloną flagę rsync ze względów bezpieczeństwa: '${flag}'`);
+      }
+      if (i + 1 < flags.length && !flags[i + 1].startsWith('-') && !flag.includes('=')) {
+        if (flag === '-e' || flag.endsWith('e') || isDangerousLong) {
+          i++;
+        }
+      }
+      continue;
+    }
+
     if (rcloneValueFlags.has(flag)) {
       const nextVal = (i + 1 < flags.length && !flags[i + 1].startsWith('-')) ? ` ${flags[i + 1]}` : '';
       if (onWarning) {
@@ -199,6 +327,10 @@ export function generateCommandPreview(
       .join(' ');
 
     const customFlags = (task.customFlags || '').trim();
+    const warnings: string[] = [];
+    const onWarn = (msg: string) => {
+      warnings.push(`# ${msg}`);
+    };
 
     if (task.engine === 'rclone') {
       let cmdType = 'sync';
@@ -214,9 +346,17 @@ export function generateCommandPreview(
       const parts = ['rclone', cmdType, `"${src}"`, `"${dst}"`, '-P', '--stats 1s'];
       if (trashFlag) parts.push(trashFlag);
       if (excludes) parts.push(excludes);
-      if (customFlags) parts.push(customFlags);
+      if (customFlags) {
+        const safeRclone = sanitizeRcloneFlags(customFlags, onWarn);
+        if (safeRclone.length > 0) parts.push(safeRclone.join(' '));
+      }
 
-      commands.push(parts.filter(Boolean).join(' '));
+      const cmdStr = parts.filter(Boolean).join(' ');
+      if (warnings.length > 0) {
+        commands.push(`${warnings.join('\n')}\n${cmdStr}`);
+      } else {
+        commands.push(cmdStr);
+      }
     } else {
       // rsync
       const rsyncMode = task.rsyncFlagsMode === 'rtv' ? '-rtv' : '-avh';
@@ -246,13 +386,18 @@ export function generateCommandPreview(
       if (trashFlag) parts.push(trashFlag);
       if (rsyncExcludes) parts.push(rsyncExcludes);
       if (customFlags) {
-        const safeFlags = sanitizeRsyncFlags(customFlags);
+        const safeFlags = sanitizeRsyncFlags(customFlags, onWarn);
         if (safeFlags.length > 0) parts.push(safeFlags.join(' '));
       }
       parts.push(`"${normalizedSrc}"`);
       parts.push(`"${normalizedDst}"`);
 
-      commands.push(parts.filter(Boolean).join(' '));
+      const cmdStr = parts.filter(Boolean).join(' ');
+      if (warnings.length > 0) {
+        commands.push(`${warnings.join('\n')}\n${cmdStr}`);
+      } else {
+        commands.push(cmdStr);
+      }
     }
   }
 
@@ -402,6 +547,10 @@ export function enqueueTask(
   restoredPairIds?: string[],
   triggeredBy: string = 'manual'
 ): JobExecution {
+  if (isShuttingDown) {
+    throw new Error('Serwer jest w trakcie zamykania (SIGTERM/SIGINT). Nie można zakolejkować zadania.');
+  }
+
   if (isTaskRunningOrQueued(task.id)) {
     throw new Error(`Zadanie "${task.name}" jest już aktywne lub oczekuje w kolejce.`);
   }
@@ -457,6 +606,10 @@ export function enqueueTask(
 }
 
 function processQueue(): void {
+  if (isShuttingDown) {
+    return;
+  }
+
   const settings = getSettings();
   const maxConcurrent = Math.max(1, settings.maxConcurrentJobs || 1);
   const delayMs = Math.max(0, settings.queueStartDelaySeconds ?? 5) * 1000;
@@ -602,7 +755,10 @@ function executeRealJob(ctx: ActiveJobContext, selectedPairIds?: string[]): void
       }
 
       if (task.customFlags) {
-        args.push(...task.customFlags.split(' ').filter(Boolean));
+        const safeFlags = sanitizeRcloneFlags(task.customFlags, (msg) => {
+          fs.appendFileSync(logFilePath, `${msg}\n`);
+        });
+        args.push(...safeFlags);
       }
     } else {
       // rsync
@@ -1329,19 +1485,23 @@ function finishJob(ctx: ActiveJobContext, finalStatus: 'completed' | 'failed' | 
   cleanupSystemLogs();
   cleanupDatabaseBackups();
 
-  // Chained task execution: "uruchom po zakończeniu innego zadania - kolejkowanie"
-  if (job.mode === 'backup') {
-    if (finalStatus === 'completed') {
-      triggerChainedTasks(task.id, 'completed');
-    } else if (finalStatus === 'failed') {
-      triggerChainedTasks(task.id, 'failed');
-    } else if (finalStatus === 'stopped' && ctx.runNextChained) {
-      triggerChainedTasks(task.id, 'stopped');
+  // Chained task execution & queue processing: skip if shutting down
+  if (!isShuttingDown) {
+    if (job.mode === 'backup') {
+      if (finalStatus === 'completed') {
+        triggerChainedTasks(task.id, 'completed');
+      } else if (finalStatus === 'failed') {
+        triggerChainedTasks(task.id, 'failed');
+      } else if (finalStatus === 'stopped' && ctx.runNextChained) {
+        triggerChainedTasks(task.id, 'stopped');
+      }
     }
-  }
 
-  // Process next queued job
-  processQueue();
+    // Process next queued job
+    processQueue();
+  } else {
+    console.log(`[Shutdown] Skipping chained task execution and queue processing for job ${job.id} ("${task.name}") due to container shutdown.`);
+  }
 }
 
 function triggerChainedTasks(finishedTaskId: string, status: 'completed' | 'failed' | 'stopped' = 'completed'): void {
@@ -1510,6 +1670,11 @@ export function cleanupOldCsvReports(task?: Task): void {
 // Graceful container shutdown: "Obsługę zatrzymywania kontenera czyli np aktywne zadanie najpierw zostaje zatrzymane"
 export function handleGracefulShutdown(): Promise<void> {
   console.log('[SyncVault] Initiating graceful container shutdown...');
+  isShuttingDown = true;
+  if (queueDelayTimer) {
+    clearTimeout(queueDelayTimer);
+    queueDelayTimer = null;
+  }
   return new Promise(resolve => {
     // Also clear queued jobs
     while (queuedJobs.length > 0) {

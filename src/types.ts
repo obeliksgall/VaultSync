@@ -132,6 +132,7 @@ export interface NotificationSettings {
   smtpPort: number;
   smtpUser: string;
   smtpPass: string;
+  clearSmtpPass?: boolean; // Flaga żądania wyczyszczenia zapisanego hasła SMTP
   smtpFrom: string;
   notifyEmailTo: string;
   emailSubjectTemplate?: string;
@@ -139,6 +140,9 @@ export interface NotificationSettings {
   emailAttachLogsOnError?: boolean;
   emailLogAttachment?: EmailLogAttachmentCondition;
   defaultTrigger: 'all' | 'error' | 'success';
+  retryAttempts?: number; // Liczba prób ponowienia przy błędach sieciowych / 429 / 5xx (domyślnie: 3, zakres: 1-10)
+  retryDelaySeconds?: number; // Początkowe opóźnienie w sekundach przed ponowieniem (domyślnie: 2, zakres: 1-30)
+  timeoutSeconds?: number; // Limit czasu pojedynczego żądania HTTP / SMTP w sekundach (domyślnie: 10, zakres: 3-60)
 }
 
 export type AutoLogoutTimeout = '30m' | '1h' | '3h' | 'unlimited';
@@ -221,7 +225,7 @@ export const DEFAULT_NOTIFICATION_BODY_PL = `Nazwa: {name}
 Tryb: {mode}
 Status: {status}
 Pliki: {files}
-Dane przesĹ‚ane: {data}
+Dane przesłane: {data}
 Data uruchomienia: {date}
 Czas trwania: {time}`;
 

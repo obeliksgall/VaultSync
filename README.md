@@ -12,10 +12,17 @@
 - **Unikalna numeracja zadań (#ID) i kolejkowanie:**
   - Każde zadanie posiada czytelny identyfikator numeryczny (`#1`, `#2`, `#3`...).
   - **Inteligentne unikanie luk w numeracji:** usunięcie zadania o najwyższym numerze (np. omyłkowo zduplikowanego zadania `#21`) powoduje automatyczne cofnięcie licznika, dzięki czemu kolejne utworzone zadanie ponownie otrzymuje zwolniony numer (`#21`).
-  - **Kolejkowanie łańcuchowe (Task Chaining):** automatyczne uruchamianie zadania zależnego po pomyślnym zakończeniu innego zadania.
-  - **Konfigurowalny odstęp kolejki (Queue Breather):** parametr `queueStartDelaySeconds` pozwalający ustalić bufor odpoczynku (np. 5 sekund) przed startem kolejnego zadania z kolejki.
+  - **Kolejkowanie łańcuchowe (Task Chaining):**
+  - Automatyczne uruchamianie zadania zależnego po zakończeniu zadania nadrzędnego (`runAfterTaskId`).
+  - **Przełącznik kontynuacji przy błędzie (`runAfterOnFailure`):** decyduje, czy zadanie zależne ma wystartować w przypadku niepowodzenia zadania nadrzędnego (domyślnie: TAK).
+  - **Zapytanie przy ręcznym zatrzymaniu (`runNextChained`):** podczas zatrzymywania aktywnego zadania system pyta, czy uruchomić zaplanowane zadania zależne.
+  - **Wykrywanie cykli i zapętleń:** weryfikacja poprawności łańcucha zadań uniemożliwia powstanie pętli nieskończonych (A &rarr; B &rarr; A).
+- **Konfigurowalny odstęp kolejki (Queue Breather):** parametr `queueStartDelaySeconds` pozwalający ustalić bufor odpoczynku (np. 5 sekund) przed startem kolejnego zadania z kolejki.
 - **Wiele par ścieżek w jednym zadaniu:**
   - Definiowanie wielu wektorów źródło &rarr; cel w ramach jednej logicznej jednostki backupu.
+- **Bezpieczne flagi niestandardowe (Custom Flags):**
+  - Pełne wsparcie dla argumentów w cudzysłowach (np. `--exclude "*.tmp"`).
+  - Wbudowany filtr bezpieczeństwa blokujący niebezpieczne flagi uruchomieniowe (np. `--password-command`, `--rc-addr` dla rclone, `--rsh`, `-e` dla rsync).
 - **Raporty CSV wysłanych i usuniętych plików (z rzeczywistego wykonania):**
   - Generowanie precyzyjnych zestawień CSV bezpośrednio z operacji transferu (pliki wysłane) oraz czyszczenia (pliki usunięte).
   - **Nowa kolumna "Cel" / "Destination":** raporty zawierają pełną informację o wektorze transferu (`Ścieżka źródłowa` ; `Cel` ; `Rozmiar` ; `Data modyfikacji` ; `Status`).
@@ -30,6 +37,9 @@
 - **Optymalizacja chmury Drime (drime.cloud):**
   - Praktyczny poradnik konfiguracji, optymalizacji flag oraz rozwiązywania problemów (błędy 422, kosz, znaki specjalne) znajduje się w pliku [`DRIME_RCLONE_GUIDE.md`](./DRIME_RCLONE_GUIDE.md).
 - **Bezpieczeństwo operacyjne i zarządzanie sesją:**
+  - **Ochrona sekretów:** endpoint ustawień maskuje hasła SMTP (`••••••••`) dla administratora i całkowicie usuwa sekrety dla użytkowników o roli operatora.
+  - **Ochrona biletów pobierania (?ticket=):** jednorazowe bilety pobierania są akceptowane wyłącznie na trasach pobierania plików (`GET`), co zapobiega autoryzacji mutacji danych.
+  - **Nagłówki bezpieczeństwa:** wbudowana ochrona CSP, X-Frame-Options, X-Content-Type-Options i Referrer-Policy.
   - **Licznik czasu sesji na żywo:** umieszczony na górnym pasku nawigacyjnym (między zmianą hasła a wylogowaniem), z dynamiczną kolorystyką (ostrzeżenie poniżej 5 min, pulsowanie poniżej 2 min).
   - **Auto-wylogowanie i przedłużanie przy aktywności:** konfigurowalny czas bezczynności (30m, 1h, 3h lub brak limitu); każdy ruch, kliknięcie lub akcja automatycznie odnawia sesję w tle (heartbeat), z opcją natychmiastowego odświeżenia kliknięciem w licznik.
   - **Blokada edycji i usuwania:** aktywne zadania (w trakcie wykonywania lub w kolejce) mają automatycznie zablokowaną możliwość edycji i skasowania.
@@ -39,9 +49,10 @@
   - Opcjonalny wyłącznik funkcji przywracania w konfiguracji zadania (przycisk wyłączony z jasnym komunikatem blokady).
 - **Monitor zadań na żywo (Job Monitor):**
   - Podgląd w czasie rzeczywistym: pasek postępu, prędkość transferu (MB/s), liczba przetransferowanych bajtów i plików, strumieniowanie logów oraz bezpieczne zatrzymywanie procesów.
-- **Powiadomienia wielokanałowe z auto-transliteracją:**
+- **Powiadomienia wielokanałowe z odpornością i ponawianiem:**
   - Kanały: **Discord Webhook**, **ntfy.sh (Push)** oraz **E-mail (SMTP)**.
-  - **Auto-transliteracja polskich znaków (np. ó&rarr;o, ł&rarr;l, ą&rarr;a):** automatyczne usuwanie diakrytyków z tytułów wiadomości Discord, tematów e-mail oraz powiadomień ntfy, gwarantujące brak problemów z kodowaniem znaków.
+  - **Odporność sieciowa (Retry & Timeout):** obsługa kodów HTTP 429 (Rate Limit z nagłówkiem Retry-After), HTTP 5xx, retry z backoffem dla SMTP, konfigurowalna liczba prób (`retryAttempts`), opóźnienie (`retryDelaySeconds`) i timeout (`timeoutSeconds`).
+  - **Auto-transliteracja polskich znaków (np. ó&rarr;o, ł&rarr;l, ą&rarr;a):** automatyczne usuwanie diakrytyków z nagłówków wiadomości.
   - Precyzyjna polityka dołączania plików dziennika (`.log`) w wiadomościach e-mail (*Tylko przy błędzie*, *Błąd i ostrzeżenie*, *Zawsze*, *Tylko sukces*, *Nigdy*).
   - Konfigurowalne szablony tytułów i treści ze zmiennymi (`{name}`, `{status}`, `{files}`, `{data}`, `{time}`, itp.).
 - **Wielozadaniowość i harmonogramy CRON:**
@@ -54,7 +65,7 @@
   - Konfigurowalna retencja czasowa (domyślnie 14 dni) z twardą gwarancją ochrony: system **nigdy nie usuwa kopii poniżej zadeklarowanego progu (domyślnie min. 14 kopii)**.
   - Podgląd i bezpośrednie pobieranie kopii bazy w zakładce *Ustawienia &rarr; Kopia & Docker*.
 - **Kopia zapasowa konfiguracji (.svb):**
-  - Eksport i import całej konfiguracji aplikacji, zadań, historii i haseł w zaszyfrowanych plikach `.svb`.
+  - Eksport i import konfiguracji aplikacji, zadań, ustawień i użytkowników w zaszyfrowanych plikach `.svb` z pełną walidacją struktury i łańcuchów zależności. Hasła użytkowników nie są eksportowane w postaci jawnej ani hashy ze względów bezpieczeństwa (administrator definiuje nowe hasła po odtworzeniu środowiska).
 
 ---
 
@@ -337,6 +348,13 @@ W razie awarii lub utraty plików kliknij **Przywróć** przy wybranym zadaniu:
    Przed każdą aktualizacją obrazu kontenera wejdź w `Ustawienia &rarr; Kopia & Docker` i pobierz zaszyfrowaną kopię konfiguracji.
 3. **Ochrona uprawnień w systemie Linux:**
    Upewnij się, że użytkownik systemowy kontenera ma prawo zapisu w katalogach docelowych oraz w katalogu `./data`.
+4. **Wdrożenie produkcyjne za Reverse Proxy z TLS:**
+   Aplikacja działa w protokole HTTP na porcie 3000 i implementuje nagłówki bezpieczeństwa (CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy). W środowiskach dostępnych publicznie lub sieci firmowej zawsze stawiaj kontener za reverse proxy (Nginx, Traefik, Caddy) z aktywnym certyfikatem HTTPS/TLS.
+5. **Filtr flag niestandardowych (Custom Flags):**
+   SyncVault pozwala na przekazywanie niestandardowych flag silników w polach zadań, jednak niebezpieczne flagi uruchomieniowe (takie jak `--password-command`, `--rc-addr`, `--rc-web-gui` dla rclone czy `--rsh`, `-e`, `--log-file`, `--daemon` dla rsync) są aktywnie blokowane, aby zapobiec nieautoryzowanemu wykonaniu poleceń w kontenerze.
+6. **Uprawnienia kontenera (root):**
+   Kontener domyślnie wykonuje procesy jako `root`. Jest to świadoma decyzja architektoniczna wynikająca ze specyfiki narzędzi backupowych (`rsync` i `rclone`), wymagających pełnego dostępu do zachowywania właścicieli plików (`chown`), uprawnień POSIX, twardych dowiązań (`-aHAX`) oraz swobodnego odczytu zamontowanych wolumenów różnych użytkowników systemu hosta bez błędów typu *Permission Denied*.
+
 
 ---
 

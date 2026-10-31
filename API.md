@@ -147,11 +147,19 @@ Aplikacja generuje raporty CSV bezpośrednio z operacji transferu oraz usuwania 
 | Metoda | Ścieżka | Auth | Opis |
 |---|---|---|---|
 | GET | `/api/jobs` | user | Aktywne i oczekujące zadania (Job Monitor, domyślny limit konfigurowalny) |
-| POST | `/api/jobs/:id/stop` | user | Natychmiastowe zatrzymanie / przerwanie procesu zadania |
+| POST | `/api/jobs/:id/stop` | user | Natychmiastowe zatrzymanie procesu (opcjonalne body: `{"runNextChained": boolean}` – czy odpalić zadanie zależne) |
 | GET | `/api/jobs/:id/logs` | user | Strumień logów zadania (stdout/stderr procesu) |
 | GET | `/api/jobs/:id/download-log` | user | Pobranie pliku logu (`.log`) danego wykonania |
 | GET | `/api/jobs/:id/csv/:type` | user | Pobranie raportu CSV (`sent` lub `deleted`) dla joba |
 | GET | `/api/history` | user | Pełna historia wykonań zadań (opcjonalny parametr `?limit=N`) |
+
+---
+
+## Kolejkowanie łańcuchowe i zapobieganie cyklom
+
+W polach zadania dostępne są parametry:
+- `runAfterTaskId` (`string | null`) — identyfikator zadania nadrzędnego. Endpointy `POST /api/tasks`, `PUT /api/tasks/:id` oraz import `.svb` weryfikują istnienie zadania i wykrywają cykle (A &rarr; B &rarr; A), zwracając HTTP 400 przy zapętleniu.
+- `runAfterOnFailure` (`boolean`, domyślnie `true`) — czy kontynuować zadanie zależne w przypadku błędu zadania nadrzędnego.
 
 ---
 
@@ -176,10 +184,10 @@ Przed każdą modyfikacją pliku bazy `syncvault-db.json` (dodaniem/edycją/usun
 
 | Metoda | Ścieżka | Auth | Opis |
 |---|---|---|---|
-| GET/POST | `/api/rclone/config` | admin | Odczyt i zapis konfiguracji zdalnych zasobów chmurowych `rclone.conf` |
-| GET | `/api/settings` | user | Odczyt parametrów globalnych systemu |
-| PUT | `/api/settings` | admin | Aktualizacja ustawień globalnych (wymusza też czyszczenie retencyjne CSV) |
-| POST | `/api/settings/test-notification` | admin | Test wysyłki powiadomienia (`{"type":"discord"|"ntfy"|"email"}`) |
+| GET/POST | `/api/rclone/config` | admin | Odczyt i zapis konfiguracji zdalnych zasobów chmurowych `rclone.conf` (zapis atomowy z uprawnieniami 0600) |
+| GET | `/api/settings` | user | Odczyt parametrów globalnych systemu (sekrety ukryte dla operatora, zamaskowane dla admina) |
+| PUT | `/api/settings` | admin | Aktualizacja ustawień globalnych (zachowuje hasło przy masce `••••••••`) |
+| POST | `/api/settings/test-notification` | admin | Test wysyłki powiadomienia (`{"type":"discord"|"ntfy"|"email"}`) z retry i timeoutem |
 | GET | `/api/audit` | admin | Dziennik audytu operacji administracyjnych i systemowych |
 | POST | `/api/audit/clear` | admin | Wyczyszczenie historii dziennika audytu |
 

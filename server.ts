@@ -45,6 +45,7 @@ import {
   stopJob,
   cancelAndRemoveTaskJobs,
   handleGracefulShutdown,
+  setIsShuttingDown,
   isTaskRunningOrQueued,
   cleanupOldCsvReports,
 } from './server/executor.js';
@@ -59,6 +60,7 @@ import {
   getSystemLogFilePath,
   getSystemLogDateStr,
 } from './server/systemLogger.js';
+import { getSystemFlagsHelp } from './server/helpParser.js';
 
 // Initialize container and process logging to /data/logs/logs_YYYY-MM-DD.log
 initSystemLogger();
@@ -240,17 +242,28 @@ function getSessionUser(req: Request): { userId: string; username: string; role:
     token = authHeader.substring(7);
   }
 
-  // Accept short-lived, single-use download ticket (for direct file downloads via browser)
+  // Accept short-lived, single-use download ticket strictly for safe GET file download routes via browser
   if (!token && req.query && typeof req.query.ticket === 'string') {
-    const ticketStr = req.query.ticket;
-    const ticket = downloadTickets.get(ticketStr);
-    if (ticket && Date.now() <= ticket.expiresAt) {
-      downloadTickets.delete(ticketStr); // single-use: consumed immediately
-      return {
-        userId: ticket.userId,
-        username: ticket.username,
-        role: ticket.role,
-      };
+    const isAllowedDownloadRoute =
+      req.method === 'GET' &&
+      (
+        (req.path.startsWith('/api/jobs/') && (req.path.endsWith('/download-log') || req.path.endsWith('/onedrive-report') || req.path.includes('/csv/'))) ||
+        (req.path.startsWith('/api/tasks/') && req.path.endsWith('/files/download')) ||
+        req.path === '/api/system/logs/download' ||
+        req.path === '/api/system/db-backups/download'
+      );
+
+    if (isAllowedDownloadRoute) {
+      const ticketStr = req.query.ticket;
+      const ticket = downloadTickets.get(ticketStr);
+      if (ticket && Date.now() <= ticket.expiresAt) {
+        downloadTickets.delete(ticketStr); // single-use: consumed immediately
+        return {
+          userId: ticket.userId,
+          username: ticket.username,
+          role: ticket.role,
+        };
+      }
     }
     return null;
   }
@@ -308,6 +321,21 @@ async function startServer() {
 
   // Enable trust proxy so Express correctly resolves client IP behind reverse proxy / load balancer
   app.set('trust proxy', 1);
+
+  // Security headers: anti-XSS, anti-sniffing, anti-clickjacking
+  app.use((_req: Request, res: Response, next: NextFunction) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    if (process.env.NODE_ENV === 'production') {
+      res.setHeader(
+        'Content-Security-Policy',
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https://raw.githubusercontent.com; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self';"
+      );
+    }
+    next();
+  });
 
   app.use(express.json({ limit: '15mb' }));
 
@@ -684,6 +712,159 @@ async function startServer() {
     });
   });
 
+  // Helper: validate runAfterTaskId to prevent nonexistent tasks and dependency cycles (A -> B -> A)
+  function validateRunAfterTaskId(
+    targetTaskId: string | null,
+    proposedRunAfterTaskId: string | null | undefined,
+    allTasks: Task[]
+  ): { valid: boolean; error?: string } {
+    if (!proposedRunAfterTaskId) {
+      return { valid: true };
+    }
+
+    if (targetTaskId && proposedRunAfterTaskId === targetTaskId) {
+      return { valid: false, error: 'Zadanie nie może być uruchamiane po samym sobie.' };
+    }
+
+    const parentTask = allTasks.find(t => t.id === proposedRunAfterTaskId);
+    if (!parentTask) {
+      return { valid: false, error: 'Wybrane zadanie nadrzędne (runAfterTaskId) nie istnieje.' };
+    }
+
+    // Traverse upwards from proposedRunAfterTaskId to check for cycles
+    let currentId: string | null | undefined = proposedRunAfterTaskId;
+    const visited = new Set<string>();
+
+    while (currentId) {
+      if (targetTaskId && currentId === targetTaskId) {
+        return {
+          valid: false,
+          error: `Wykryto zapętlenie (cykl) w kolejce zadań: wybrane zadanie "${parentTask.name}" zależy bezpośrednio lub pośrednio od tego zadania.`,
+        };
+      }
+
+      if (visited.has(currentId)) {
+        return {
+          valid: false,
+          error: 'Wykryto zapętlenie (cykl) w istniejącym łańcuchu zadań nadrzędnych.',
+        };
+      }
+      visited.add(currentId);
+
+      const nextTask = allTasks.find(t => t.id === currentId);
+      currentId = nextTask?.runAfterTaskId;
+    }
+
+    return { valid: true };
+  }
+
+  // Helper: validate task schema, enums, pairs, schedules
+  function validateTaskStructure(task: any, index?: number): { valid: boolean; error?: string } {
+    const prefix = index !== undefined ? `Zadanie #${index + 1}` : 'Zadanie';
+    if (!task || typeof task !== 'object') {
+      return { valid: false, error: `${prefix}: Nieprawidłowy obiekt zadania.` };
+    }
+    if (!task.id || typeof task.id !== 'string') {
+      return { valid: false, error: `${prefix}: Brak wymaganego identyfikatora (id).` };
+    }
+    if (!task.name || typeof task.name !== 'string' || !task.name.trim()) {
+      return { valid: false, error: `${prefix}: Brak wymaganej nazwy zadania.` };
+    }
+    if (task.engine !== 'rclone' && task.engine !== 'rsync') {
+      return { valid: false, error: `${prefix} ("${task.name}"): Nieprawidłowy silnik (${task.engine}). Dozwolone: 'rclone', 'rsync'.` };
+    }
+    if (task.type !== 'mirror' && task.type !== 'copy' && task.type !== 'move') {
+      return { valid: false, error: `${prefix} ("${task.name}"): Nieprawidłowy typ zadania (${task.type}). Dozwolone: 'mirror', 'copy', 'move'.` };
+    }
+    if (task.rsyncFlagsMode !== undefined && task.rsyncFlagsMode !== 'avh' && task.rsyncFlagsMode !== 'rtv') {
+      return { valid: false, error: `${prefix} ("${task.name}"): Nieprawidłowy tryb flag rsync (${task.rsyncFlagsMode}).` };
+    }
+    if (!Array.isArray(task.pairs) || task.pairs.length === 0) {
+      return { valid: false, error: `${prefix} ("${task.name}"): Wymagana jest co najmniej jedna para źródło->cel w 'pairs'.` };
+    }
+    for (let pIdx = 0; pIdx < task.pairs.length; pIdx++) {
+      const pair = task.pairs[pIdx];
+      if (!pair || typeof pair !== 'object') {
+        return { valid: false, error: `${prefix} ("${task.name}"): Para #${pIdx + 1} jest nieprawidłowa.` };
+      }
+      if (typeof pair.source !== 'string' || !pair.source.trim()) {
+        return { valid: false, error: `${prefix} ("${task.name}"): Para #${pIdx + 1} nie posiada ścieżki źródłowej (source).` };
+      }
+      if (typeof pair.destination !== 'string' || !pair.destination.trim()) {
+        return { valid: false, error: `${prefix} ("${task.name}"): Para #${pIdx + 1} nie posiada ścieżki docelowej (destination).` };
+      }
+    }
+    if (task.schedules !== undefined && !Array.isArray(task.schedules)) {
+      return { valid: false, error: `${prefix} ("${task.name}"): Pole 'schedules' musi być tablicą.` };
+    }
+    if (Array.isArray(task.schedules)) {
+      const validScheduleTypes = ['once', 'daily', 'weekly', 'monthly', 'interval'];
+      for (let sIdx = 0; sIdx < task.schedules.length; sIdx++) {
+        const sch = task.schedules[sIdx];
+        if (!sch || typeof sch !== 'object') {
+          return { valid: false, error: `${prefix} ("${task.name}"): Harmonogram #${sIdx + 1} jest nieprawidłowy.` };
+        }
+        if (sch.type && !validScheduleTypes.includes(sch.type)) {
+          return { valid: false, error: `${prefix} ("${task.name}"): Harmonogram #${sIdx + 1} ma nieprawidłowy typ '${sch.type}'.` };
+        }
+        if (typeof sch.time !== 'string' || !/^\d{2}:\d{2}$/.test(sch.time)) {
+          return { valid: false, error: `${prefix} ("${task.name}"): Harmonogram #${sIdx + 1} ma nieprawidłowy format godziny (wymagane HH:mm).` };
+        }
+      }
+    }
+    if (task.runAfterOnFailure !== undefined && typeof task.runAfterOnFailure !== 'boolean') {
+      return { valid: false, error: `${prefix} ("${task.name}"): Pole 'runAfterOnFailure' musi być wartością logiczną (boolean).` };
+    }
+    if (task.notifications !== undefined) {
+      if (!task.notifications || typeof task.notifications !== 'object' || Array.isArray(task.notifications)) {
+        return { valid: false, error: `${prefix} ("${task.name}"): Pole 'notifications' musi być obiektem konfiguracyjnym.` };
+      }
+      if (task.notifications.trigger !== undefined && !['all', 'error', 'success'].includes(task.notifications.trigger)) {
+        return { valid: false, error: `${prefix} ("${task.name}"): Nieprawidłowa wartość 'notifications.trigger' ('${task.notifications.trigger}'). Dozwolone: 'all', 'error', 'success'.` };
+      }
+      if (task.notifications.emailLogAttachment !== undefined && !['never', 'always', 'success', 'warning', 'error', 'error_warning'].includes(task.notifications.emailLogAttachment)) {
+        return { valid: false, error: `${prefix} ("${task.name}"): Nieprawidłowa wartość 'notifications.emailLogAttachment' ('${task.notifications.emailLogAttachment}').` };
+      }
+    }
+    return { valid: true };
+  }
+
+  // Helper: validate all imported tasks chaining and cycle detection
+  function validateAllImportedTasksChaining(tasks: Task[]): { valid: boolean; error?: string } {
+    const taskMap = new Map<string, Task>();
+    for (const t of tasks) {
+      if (taskMap.has(t.id)) {
+        return { valid: false, error: `Zduplikowany identyfikator zadania: ${t.id}` };
+      }
+      taskMap.set(t.id, t);
+    }
+
+    for (const task of tasks) {
+      if (!task.runAfterTaskId) continue;
+      if (task.runAfterTaskId === task.id) {
+        return { valid: false, error: `Zadanie "${task.name}" odwołuje się w runAfterTaskId do samego siebie.` };
+      }
+      const parent = taskMap.get(task.runAfterTaskId);
+      if (!parent) {
+        return { valid: false, error: `Zadanie "${task.name}" odwołuje się w runAfterTaskId do nieistniejącego zadania (ID: ${task.runAfterTaskId}).` };
+      }
+
+      let current: Task | undefined = parent;
+      const visited = new Set<string>([task.id]);
+      while (current) {
+        if (visited.has(current.id)) {
+          return {
+            valid: false,
+            error: `Wykryto zapętlenie (cykl) w łańcuchu zadań: "${task.name}" i "${current.name}".`,
+          };
+        }
+        visited.add(current.id);
+        current = current.runAfterTaskId ? taskMap.get(current.runAfterTaskId) : undefined;
+      }
+    }
+    return { valid: true };
+  }
+
   // 7. Tasks
   app.get('/api/tasks', requireAuth, (req: Request, res: Response) => {
     res.json(getTasks());
@@ -705,6 +886,16 @@ async function startServer() {
     if (!data.name || !data.pairs || data.pairs.length === 0) {
       res.status(400).json({ error: 'Nazwa oraz co najmniej jedna para źródło->cel są wymagane.' });
       return;
+    }
+
+    const runAfterTaskId = data.runAfterTaskId ? String(data.runAfterTaskId).trim() : null;
+    if (runAfterTaskId) {
+      const allTasks = getTasks();
+      const validation = validateRunAfterTaskId(null, runAfterTaskId, allTasks);
+      if (!validation.valid) {
+        res.status(400).json({ error: validation.error });
+        return;
+      }
     }
 
     const newTask: Task = {
@@ -732,7 +923,7 @@ async function startServer() {
         date: s.date,
         enabled: s.enabled !== false,
       })),
-      runAfterTaskId: data.runAfterTaskId || null,
+      runAfterTaskId,
       runAfterOnFailure: data.runAfterOnFailure !== undefined ? Boolean(data.runAfterOnFailure) : true,
       excludeFilters: Array.isArray(data.excludeFilters) ? data.excludeFilters : [],
       restoreEnabled: data.restoreEnabled !== false,
@@ -765,6 +956,20 @@ async function startServer() {
     }
 
     const data = req.body;
+
+    const proposedRunAfter = data.runAfterTaskId !== undefined
+      ? (data.runAfterTaskId ? String(data.runAfterTaskId).trim() : null)
+      : task.runAfterTaskId;
+
+    if (proposedRunAfter) {
+      const allTasks = getTasks();
+      const validation = validateRunAfterTaskId(task.id, proposedRunAfter, allTasks);
+      if (!validation.valid) {
+        res.status(400).json({ error: validation.error });
+        return;
+      }
+    }
+
     const updated: Task = {
       ...task,
       name: data.name ? data.name.trim() : task.name,
@@ -782,17 +987,19 @@ async function startServer() {
       })) : task.pairs,
       customFlags: data.customFlags !== undefined ? data.customFlags : task.customFlags,
       scheduleEnabled: data.scheduleEnabled !== undefined ? data.scheduleEnabled : task.scheduleEnabled,
-      schedules: (data.schedules || []).slice(0, 30).map((s: any) => ({
-        id: s.id || crypto.randomUUID(),
-        type: s.type || 'daily',
-        time: s.time || '00:00',
-        daysOfWeek: s.daysOfWeek || [],
-        dayOfMonth: s.dayOfMonth,
-        daysOfMonth: Array.isArray(s.daysOfMonth) ? s.daysOfMonth : undefined,
-        date: s.date,
-        enabled: s.enabled !== false,
-      })),
-      runAfterTaskId: data.runAfterTaskId !== undefined ? data.runAfterTaskId : task.runAfterTaskId,
+      schedules: data.schedules !== undefined
+        ? (Array.isArray(data.schedules) ? data.schedules.slice(0, 30) : []).map((s: any) => ({
+            id: s.id || crypto.randomUUID(),
+            type: s.type || 'daily',
+            time: s.time || '00:00',
+            daysOfWeek: s.daysOfWeek || [],
+            dayOfMonth: s.dayOfMonth,
+            daysOfMonth: Array.isArray(s.daysOfMonth) ? s.daysOfMonth : undefined,
+            date: s.date,
+            enabled: s.enabled !== false,
+          }))
+        : task.schedules,
+      runAfterTaskId: proposedRunAfter,
       runAfterOnFailure: data.runAfterOnFailure !== undefined ? Boolean(data.runAfterOnFailure) : (task.runAfterOnFailure ?? true),
       excludeFilters: Array.isArray(data.excludeFilters) ? data.excludeFilters : task.excludeFilters,
       restoreEnabled: data.restoreEnabled !== undefined ? data.restoreEnabled : task.restoreEnabled,
@@ -1258,37 +1465,103 @@ async function startServer() {
   app.post('/api/rclone/config', requireAdmin, (req: Request, res: Response) => {
     const user = (req as any).user;
     const { content } = req.body;
+
+    if (typeof content !== 'string') {
+      res.status(400).json({ error: 'Nieprawidłowa treść konfiguracji (wymagany typ string w polu content).' });
+      return;
+    }
+
     const confPath = getRcloneConfigPath();
+    const confDir = path.dirname(confPath);
+    const tmpPath = path.join(confDir, `rclone.conf.tmp.${crypto.randomBytes(6).toString('hex')}`);
 
     try {
-      fs.mkdirSync(path.dirname(confPath), { recursive: true });
-      fs.writeFileSync(confPath, content || '', 'utf-8');
-      addAuditLog(user.username, 'UPDATE_RCLONE_CONFIG', 'Zaktualizowano zawartość pliku rclone.conf');
+      fs.mkdirSync(confDir, { recursive: true });
+      // Atomic write: write with 0600 mode to temp file, then rename
+      fs.writeFileSync(tmpPath, content, { encoding: 'utf-8', mode: 0o600 });
+      try { fs.chmodSync(tmpPath, 0o600); } catch {}
+      fs.renameSync(tmpPath, confPath);
+      try { fs.chmodSync(confPath, 0o600); } catch {}
+
+      addAuditLog(user.username, 'UPDATE_RCLONE_CONFIG', 'Zaktualizowano zawartość pliku rclone.conf (zapis atomowy 0600)');
       res.json({ success: true, message: 'Konfiguracja rclone została zapisana.' });
     } catch (e: any) {
+      if (fs.existsSync(tmpPath)) {
+        try { fs.unlinkSync(tmpPath); } catch {}
+      }
       sendError(res, 500, 'Błąd zapisu konfiguracji rclone.', e);
     }
   });
 
   // 10. Global Settings
   app.get('/api/settings', requireAuth, (req: Request, res: Response) => {
+    const user = (req as any).user;
     const settings = getSettings();
-    // Mask sensitive credentials for non-admin or pass sanitized
-    res.json(settings);
+    const cloned = JSON.parse(JSON.stringify(settings));
+
+    if (user.role !== 'admin') {
+      // Non-admins should not see any secrets
+      if (cloned.notifications) {
+        cloned.notifications.smtpPass = '';
+        cloned.notifications.discordWebhookUrl = '';
+        cloned.notifications.ntfyUrl = '';
+        cloned.notifications.smtpUser = '';
+      }
+    } else {
+      // For admins, mask smtpPass if configured so plain text is not exposed in browser DOM/devtools
+      if (cloned.notifications && cloned.notifications.smtpPass) {
+        cloned.notifications.smtpPass = '••••••••';
+      }
+    }
+    res.json(cloned);
   });
 
   app.put('/api/settings', requireAdmin, (req: Request, res: Response) => {
     const user = (req as any).user;
     const body = { ...req.body };
+    const current = getSettings();
+
+    // Preserve existing smtpPass if masked or empty, unless explicitly cleared
+    if (body.notifications) {
+      const shouldClear = body.notifications.clearSmtpPass === true || body.clearSmtpPass === true;
+      delete body.notifications.clearSmtpPass;
+      delete body.clearSmtpPass;
+
+      if (shouldClear) {
+        body.notifications.smtpPass = '';
+      } else {
+        const incomingPass = body.notifications.smtpPass;
+        if (incomingPass === '••••••••' || incomingPass === '••••' || incomingPass === '' || incomingPass === undefined) {
+          body.notifications.smtpPass = current.notifications.smtpPass;
+        }
+      }
+      // Sanitize numeric limits for notification retries
+      if (body.notifications.retryAttempts !== undefined) {
+        body.notifications.retryAttempts = Math.max(1, Math.min(10, parseInt(body.notifications.retryAttempts, 10) || 3));
+      }
+      if (body.notifications.retryDelaySeconds !== undefined) {
+        body.notifications.retryDelaySeconds = Math.max(1, Math.min(30, parseInt(body.notifications.retryDelaySeconds, 10) || 2));
+      }
+      if (body.notifications.timeoutSeconds !== undefined) {
+        body.notifications.timeoutSeconds = Math.max(3, Math.min(60, parseInt(body.notifications.timeoutSeconds, 10) || 10));
+      }
+    }
+
     if (body.loginMaxAttempts !== undefined) {
       body.loginMaxAttempts = Math.max(1, Math.min(50, parseInt(body.loginMaxAttempts, 10) || 5));
     }
     if (body.loginLockoutMinutes !== undefined) {
       body.loginLockoutMinutes = Math.max(1, Math.min(1440, parseInt(body.loginLockoutMinutes, 10) || 15));
     }
+
     const updated = updateSettings(body, user.username);
     cleanupOldCsvReports();
-    res.json({ success: true, settings: updated });
+
+    const responseSettings = JSON.parse(JSON.stringify(updated));
+    if (responseSettings.notifications?.smtpPass) {
+      responseSettings.notifications.smtpPass = '••••••••';
+    }
+    res.json({ success: true, settings: responseSettings });
   });
 
   app.post('/api/settings/test-notification', requireAdmin, async (req: Request, res: Response) => {
@@ -1406,6 +1679,13 @@ async function startServer() {
     }
   });
 
+  // 11c. System Flags Help (directly parsed from rclone help flags or rsync --help)
+  app.get('/api/system/flags-help', requireAuth, (req: Request, res: Response) => {
+    const engine = (req.query.engine as string) === 'rsync' ? 'rsync' : 'rclone';
+    const result = getSystemFlagsHelp(engine);
+    res.json(result);
+  });
+
   // 12. Encrypted Config Export & Import (Admin only)
   app.post('/api/config/export', requireAdmin, (req: Request, res: Response) => {
     const user = (req as any).user;
@@ -1457,6 +1737,22 @@ async function startServer() {
       let importedTasksCount = 0;
 
       if (Array.isArray(decrypted.tasks)) {
+        // Validate each task structure, enums, pairs, schedules
+        for (let idx = 0; idx < decrypted.tasks.length; idx++) {
+          const taskCheck = validateTaskStructure(decrypted.tasks[idx], idx);
+          if (!taskCheck.valid) {
+            res.status(400).json({ error: `Błąd walidacji importowanych zadań: ${taskCheck.error}` });
+            return;
+          }
+        }
+
+        // Validate chaining and cycle detection across all imported tasks
+        const chainingCheck = validateAllImportedTasksChaining(decrypted.tasks);
+        if (!chainingCheck.valid) {
+          res.status(400).json({ error: `Błąd walidacji kolejkowania importowanych zadań: ${chainingCheck.error}` });
+          return;
+        }
+
         db.tasks = decrypted.tasks;
         importedTasksCount = decrypted.tasks.length;
         // Keep lastTaskNumber consistent
@@ -1475,8 +1771,20 @@ async function startServer() {
 
       if (decrypted.rcloneConfig && typeof decrypted.rcloneConfig === 'string') {
         const confPath = getRcloneConfigPath();
-        fs.mkdirSync(path.dirname(confPath), { recursive: true });
-        fs.writeFileSync(confPath, decrypted.rcloneConfig, 'utf-8');
+        const confDir = path.dirname(confPath);
+        const tmpPath = path.join(confDir, `rclone.conf.tmp.${crypto.randomBytes(6).toString('hex')}`);
+        try {
+          fs.mkdirSync(confDir, { recursive: true });
+          fs.writeFileSync(tmpPath, decrypted.rcloneConfig, { encoding: 'utf-8', mode: 0o600 });
+          try { fs.chmodSync(tmpPath, 0o600); } catch {}
+          fs.renameSync(tmpPath, confPath);
+          try { fs.chmodSync(confPath, 0o600); } catch {}
+        } catch (confErr) {
+          if (fs.existsSync(tmpPath)) {
+            try { fs.unlinkSync(tmpPath); } catch {}
+          }
+          throw confErr;
+        }
       }
 
       saveDatabase(db);
@@ -1510,6 +1818,7 @@ async function startServer() {
 
   // Handle graceful container shutdown
   const shutdown = async () => {
+    setIsShuttingDown(true);
     stopScheduler();
     await handleGracefulShutdown();
     process.exit(0);

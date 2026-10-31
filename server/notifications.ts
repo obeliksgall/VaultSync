@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import nodemailer from 'nodemailer';
+import nodemailer, { Transporter, SendMailOptions } from 'nodemailer';
 import { JobExecution, Task, GlobalSettings } from '../src/types.js';
 import { getSettings, getLogsDir } from './db.js';
 
@@ -90,26 +90,126 @@ export function sanitizeNtfyHeader(headerVal: string): string {
 }
 
 /**
- * Resilient fetch wrapper that automatically retries on transient network and DNS errors
- * (e.g. getaddrinfo EAI_AGAIN, ECONNRESET, ETIMEDOUT, socket hang up) with exponential backoff.
+ * Resilient fetch wrapper with timeout, HTTP 429/5xx error handling, res.ok verification,
+ * and retry with exponential backoff on transient DNS/network glitches.
  */
 async function fetchWithRetry(
   url: string,
   options: RequestInit,
   retries = 3,
-  delayMs = 2000
+  delayMs = 2000,
+  timeoutMs = 10000
 ): Promise<Response> {
   let lastError: any;
+  const maskedUrl = url.split('?')[0].replace(/api\/webhooks\/[^\/]+\/[^\/]+/, 'api/webhooks/***');
+
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      const res = await fetch(url, options);
+      const res = await fetch(url, {
+        ...options,
+        signal: options.signal || AbortSignal.timeout(timeoutMs),
+      });
+
+      if (!res.ok) {
+        const status = res.status;
+
+        // 429 Rate Limit (e.g. Discord rate limits)
+        if (status === 429) {
+          let waitMs = delayMs;
+          const retryAfterHeader = res.headers.get('retry-after');
+          if (retryAfterHeader) {
+            const parsed = parseFloat(retryAfterHeader);
+            if (!isNaN(parsed) && parsed > 0) {
+              // Header can be in seconds (Discord: e.g. 1.5) or ms; capped to max 60s
+              const rawMs = Math.round(parsed > 1000 ? parsed : parsed * 1000);
+              waitMs = Math.min(60000, Math.max(1000, rawMs));
+            }
+          }
+          if (attempt < retries) {
+            console.warn(
+              `[Notification] ${maskedUrl} returned HTTP 429 (Rate Limit). Retrying in ${waitMs}ms (attempt ${attempt}/${retries})...`
+            );
+            await new Promise(resolve => setTimeout(resolve, waitMs));
+            continue;
+          } else {
+            const body = await res.text().catch(() => '');
+            throw new Error(`HTTP 429 Too Many Requests (Rate limit reached): ${body.slice(0, 200)}`);
+          }
+        }
+
+        // 5xx Server Error (500, 502, 503, 504) - transient
+        if (status >= 500 && status < 600) {
+          if (attempt < retries) {
+            console.warn(
+              `[Notification] ${maskedUrl} returned HTTP ${status}. Retrying in ${delayMs}ms (attempt ${attempt}/${retries})...`
+            );
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+            delayMs = Math.round(delayMs * 1.5);
+            continue;
+          } else {
+            const body = await res.text().catch(() => '');
+            throw new Error(`HTTP ${status} Server Error: ${body.slice(0, 200)}`);
+          }
+        }
+
+        // 4xx client configuration error (e.g. 400 Bad Request, 401 Unauthorized, 404 Not Found)
+        const body = await res.text().catch(() => '');
+        throw new Error(`HTTP ${status}: ${body.slice(0, 200) || res.statusText}`);
+      }
+
       return res;
     } catch (err: any) {
       lastError = err;
+      // Do not retry non-transient 4xx client errors
+      const isClientError = typeof err?.message === 'string' && /^HTTP 4[0-9]{2}(?! 429)/.test(err.message);
+      if (isClientError) {
+        throw err;
+      }
+
       if (attempt < retries) {
         const errorDetail = err?.cause?.code || err?.code || err?.message || 'unknown error';
         console.warn(
-          `[Notification] Request to ${url.split('?')[0].replace(/api\/webhooks\/[^\/]+\/[^\/]+/, 'api/webhooks/***')} failed on attempt ${attempt}/${retries} (${errorDetail}). Retrying in ${delayMs}ms...`
+          `[Notification] Request to ${maskedUrl} failed on attempt ${attempt}/${retries} (${errorDetail}). Retrying in ${delayMs}ms...`
+        );
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        delayMs = Math.round(delayMs * 1.5);
+      }
+    }
+  }
+  throw lastError;
+}
+
+/**
+ * Resilient SMTP mail dispatch wrapper with retry and backoff.
+ */
+async function sendMailWithRetry(
+  transporter: Transporter,
+  mailOptions: SendMailOptions,
+  retries = 3,
+  delayMs = 2000
+): Promise<any> {
+  let lastError: any;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      return await transporter.sendMail(mailOptions);
+    } catch (err: any) {
+      lastError = err;
+      // Do not retry permanent errors (e.g. invalid auth credentials EAUTH/535, or 5xx rejection)
+      const isPermanentAuthOr5xx =
+        err?.code === 'EAUTH' ||
+        err?.command === 'AUTH' ||
+        (typeof err?.responseCode === 'number' && err.responseCode >= 500 && err.responseCode < 600);
+
+      if (isPermanentAuthOr5xx) {
+        console.warn(
+          `[Notification] SMTP permanent error (${err?.responseCode || err?.code || err?.message}) - aborting retries.`
+        );
+        throw err;
+      }
+
+      if (attempt < retries) {
+        console.warn(
+          `[Notification] SMTP dispatch failed on attempt ${attempt}/${retries} (${err?.message || err}). Retrying in ${delayMs}ms...`
         );
         await new Promise(resolve => setTimeout(resolve, delayMs));
         delayMs = Math.round(delayMs * 1.5);
@@ -204,6 +304,10 @@ export async function sendJobNotifications(job: JobExecution, task: Task): Promi
     ? renderPlaceholders(settings.notifications.discordTitleTemplate, vars)
     : defaultTitle;
 
+  const retries = Math.max(1, Math.min(10, settings.notifications?.retryAttempts ?? 3));
+  const delayMs = Math.max(1, Math.min(30, settings.notifications?.retryDelaySeconds ?? 2)) * 1000;
+  const timeoutMs = Math.max(3, Math.min(60, settings.notifications?.timeoutSeconds ?? 10)) * 1000;
+
   // 1. Discord Webhook
   if (isDiscordRequested && discordUrl) {
     try {
@@ -244,11 +348,17 @@ export async function sendJobNotifications(job: JobExecution, task: Task): Promi
         ],
       };
 
-      await fetchWithRetry(discordUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+      await fetchWithRetry(
+        discordUrl,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        },
+        retries,
+        delayMs,
+        timeoutMs
+      );
       console.log(`[Notification] Discord notification sent for job ${job.id}`);
     } catch (err) {
       console.error('[Notification] Failed to send Discord webhook:', err);
@@ -281,17 +391,23 @@ export async function sendJobNotifications(job: JobExecution, task: Task): Promi
       const ntfyUsesMonospace = needsMonospaceRendering(ntfyMessage);
       const ntfyBody = ntfyUsesMonospace ? '```\n' + ntfyMessage + '\n```' : ntfyMessage;
 
-      await fetchWithRetry(ntfyUrl, {
-        method: 'POST',
-        headers: {
-          Title: sanitizedTitle,
-          Priority: priority.toString(),
-          Tags: tag,
-          'Content-Type': 'text/plain; charset=utf-8',
-          ...(ntfyUsesMonospace ? { Markdown: 'yes' } : {}),
+      await fetchWithRetry(
+        ntfyUrl,
+        {
+          method: 'POST',
+          headers: {
+            Title: sanitizedTitle,
+            Priority: priority.toString(),
+            Tags: tag,
+            'Content-Type': 'text/plain; charset=utf-8',
+            ...(ntfyUsesMonospace ? { Markdown: 'yes' } : {}),
+          },
+          body: ntfyBody,
         },
-        body: ntfyBody,
-      });
+        retries,
+        delayMs,
+        timeoutMs
+      );
       console.log(`[Notification] ntfy notification sent for job ${job.id}`);
     } catch (err) {
       console.error('[Notification] Failed to send ntfy notification:', err);
@@ -379,6 +495,9 @@ export async function sendJobNotifications(job: JobExecution, task: Task): Promi
           host: smtpHost,
           port: settings.notifications.smtpPort || 587,
           secure: (settings.notifications.smtpPort || 587) === 465,
+          connectionTimeout: timeoutMs,
+          greetingTimeout: timeoutMs,
+          socketTimeout: timeoutMs,
         };
 
         if (settings.notifications.smtpUser && settings.notifications.smtpPass) {
@@ -390,18 +509,19 @@ export async function sendJobNotifications(job: JobExecution, task: Task): Promi
 
         const transporter = nodemailer.createTransport(transportConfig);
 
-        await transporter.sendMail({
-          from: settings.notifications.smtpFrom || 'syncvault@localhost',
-          to: settings.notifications.notifyEmailTo,
-          // Bonus fix found while cleaning up templates: this used to send the raw
-          // `customEmailSubject` variable, which no longer exists (and previously
-          // could be an un-rendered template string, or undefined entirely if no
-          // custom subject was ever configured, sending the email with no subject).
-          subject: emailSubject,
-          text: emailText,
-          html: emailHtml,
-          attachments,
-        });
+        await sendMailWithRetry(
+          transporter,
+          {
+            from: settings.notifications.smtpFrom || 'syncvault@localhost',
+            to: settings.notifications.notifyEmailTo,
+            subject: emailSubject,
+            text: emailText,
+            html: emailHtml,
+            attachments,
+          },
+          retries,
+          delayMs
+        );
         console.log(`[Notification] Email dispatched successfully to ${settings.notifications.notifyEmailTo}`);
       } else {
         console.log(`[Notification] Simulated email dispatched to ${settings.notifications.notifyEmailTo || 'configured recipient'}`);
@@ -417,17 +537,26 @@ export async function sendTestNotification(
   customTarget?: string
 ): Promise<{ success: boolean; message: string }> {
   const settings = getSettings();
+  const retries = Math.max(1, Math.min(10, settings.notifications?.retryAttempts ?? 3));
+  const delayMs = Math.max(1, Math.min(30, settings.notifications?.retryDelaySeconds ?? 2)) * 1000;
+  const timeoutMs = Math.max(3, Math.min(60, settings.notifications?.timeoutSeconds ?? 10)) * 1000;
 
   if (type === 'discord') {
     const url = customTarget || settings.notifications.discordWebhookUrl;
     if (!url) throw new Error('Brak skonfigurowanego Discord Webhook URL');
-    const res = await fetchWithRetry(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        content: '🔔 **SyncVault Test Notification**: Połączenie z webhookiem Discord działa prawidłowo!',
-      }),
-    });
+    const res = await fetchWithRetry(
+      url,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: '🔔 **SyncVault Test Notification**: Połączenie z webhookiem Discord działa prawidłowo!',
+        }),
+      },
+      retries,
+      delayMs,
+      timeoutMs
+    );
     if (!res.ok) throw new Error(`Discord zwrócił kod błędu: ${res.status}`);
     return { success: true, message: 'Powiadomienie Discord wysłane pomyślnie!' };
   }
@@ -455,14 +584,20 @@ export async function sendTestNotification(
       ? renderPlaceholders(settings.notifications.ntfyTitleTemplate, testVars)
       : 'SyncVault - Test Powiadomienia';
 
-    const res = await fetchWithRetry(url, {
-      method: 'POST',
-      headers: {
-        Title: sanitizeNtfyHeader(rawTitle),
-        Tags: 'white_check_mark,bell',
+    const res = await fetchWithRetry(
+      url,
+      {
+        method: 'POST',
+        headers: {
+          Title: sanitizeNtfyHeader(rawTitle),
+          Tags: 'white_check_mark,bell',
+        },
+        body: '🔔 Połączenie z usługą ntfy działa prawidłowo!',
       },
-      body: '🔔 Połączenie z usługą ntfy działa prawidłowo!',
-    });
+      retries,
+      delayMs,
+      timeoutMs
+    );
     if (!res.ok) throw new Error(`ntfy zwrócił błąd: ${res.status}`);
     return { success: true, message: 'Powiadomienie ntfy wysłane pomyślnie!' };
   }
@@ -481,6 +616,9 @@ export async function sendTestNotification(
         host: customTarget || smtp.smtpHost,
         port: smtp.smtpPort || 587,
         secure: (smtp.smtpPort || 587) === 465,
+        connectionTimeout: timeoutMs,
+        greetingTimeout: timeoutMs,
+        socketTimeout: timeoutMs,
       };
 
       if (smtp.smtpUser && smtp.smtpPass) {
@@ -493,12 +631,17 @@ export async function sendTestNotification(
       const transporter = nodemailer.createTransport(transportConfig);
 
       if (smtp.notifyEmailTo) {
-        await transporter.sendMail({
-          from: smtp.smtpFrom || 'syncvault@localhost',
-          to: smtp.notifyEmailTo,
-          subject: removePolishDiacritics('[SyncVault Test] Wiadomość testowa SMTP'),
-          text: 'To jest testowa wiadomość wysłana z aplikacji SyncVault potwierdzająca poprawność konfiguracji SMTP.',
-        });
+        await sendMailWithRetry(
+          transporter,
+          {
+            from: smtp.smtpFrom || 'syncvault@localhost',
+            to: smtp.notifyEmailTo,
+            subject: removePolishDiacritics('[SyncVault Test] Wiadomość testowa SMTP'),
+            text: 'To jest testowa wiadomość wysłana z aplikacji SyncVault potwierdzająca poprawność konfiguracji SMTP.',
+          },
+          retries,
+          delayMs
+        );
         return { success: true, message: `Wiadomość testowa została wysłana na adres: ${smtp.notifyEmailTo}!` };
       } else {
         await transporter.verify();

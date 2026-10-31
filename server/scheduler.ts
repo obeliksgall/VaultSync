@@ -1,5 +1,5 @@
 import { getTasks } from './db.js';
-import { enqueueTask, isTaskRunningOrQueued } from './executor.js';
+import { enqueueTask, isTaskRunningOrQueued, isServerShuttingDown } from './executor.js';
 import { TaskSchedule } from '../src/types.js';
 import { cleanupSystemLogs } from './systemLogger.js';
 
@@ -36,6 +36,7 @@ export function stopScheduler(): void {
 }
 
 function checkSchedules(): void {
+  if (isServerShuttingDown()) return;
   const now = new Date();
   const currentHour = String(now.getHours()).padStart(2, '0');
   const currentMinute = String(now.getMinutes()).padStart(2, '0');

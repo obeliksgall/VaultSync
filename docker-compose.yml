@@ -3,14 +3,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: syncvault:latest
-    container_name: syncvault
+    image: syncvaulttest:latest
+    container_name: syncvault-test
     restart: unless-stopped
     ports:
-      - "3000:3000"
-    #dns:
-    #  - 1.1.1.1
-    #  - 8.8.8.8
+      - "3050:3000"
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     environment:
       - NODE_ENV=production
       - TZ=Europe/Warsaw

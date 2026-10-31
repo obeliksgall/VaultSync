@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   X,
   Plus,
@@ -34,6 +34,7 @@ import { Language, translations } from '../i18n.ts';
 import { api } from '../api.ts';
 import { generateUUID, copyToClipboard } from '../utils.ts';
 import { DirectoryBrowserModal } from './DirectoryBrowserModal.tsx';
+import { FlagSuggestionsPicker } from './FlagSuggestionsPicker.tsx';
 
 // Computes the fixed "every N minutes since midnight" grid used by the 'interval'
 // schedule type, e.g. "03:30" -> 00:00, 03:30, 07:00, 10:30, 14:00, 17:30, 21:00.
@@ -131,6 +132,26 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
   });
 
   const [nameError, setNameError] = useState<string | null>(null);
+
+  // Identify all descendant tasks of the currently edited task (direct or indirect)
+  // to filter them out of the runAfterTaskId selector and prevent dependency cycles (A -> B -> A)
+  const descendantTaskIds = useMemo(() => {
+    if (!initialTask) return new Set<string>();
+    const descendants = new Set<string>();
+    let added = true;
+    while (added) {
+      added = false;
+      for (const t of existingTasks) {
+        if (t.runAfterTaskId && (t.runAfterTaskId === initialTask.id || descendants.has(t.runAfterTaskId))) {
+          if (!descendants.has(t.id)) {
+            descendants.add(t.id);
+            added = true;
+          }
+        }
+      }
+    }
+    return descendants;
+  }, [initialTask, existingTasks]);
 
   const openBrowserForPair = (pairIndex: number, field: 'source' | 'destination') => {
     const currentVal = pairs[pairIndex]?.[field] || '/';
@@ -703,6 +724,15 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
                     ? <>Dla rclone np. <code className="text-blue-600 dark:text-blue-400">--transfers 4 --fast-list</code> | Dla rsync np. <code className="text-blue-600 dark:text-blue-400">-z --bwlimit=10M</code></>
                     : <>For rclone e.g. <code className="text-blue-600 dark:text-blue-400">--transfers 4 --fast-list</code> | For rsync e.g. <code className="text-blue-600 dark:text-blue-400">-z --bwlimit=10M</code></>}
                 </p>
+
+                {/* Interactive flag suggestions picker */}
+                <FlagSuggestionsPicker
+                  engine={engine}
+                  customFlags={customFlags}
+                  onFlagsChange={setCustomFlags}
+                  lang={lang}
+                />
+
                 {engine === 'rsync' && (customFlags.includes('--transfers') || customFlags.includes('--checkers') || customFlags.includes('--fast-list')) && (
                   <div className="mt-2 p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300 text-xs flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
@@ -1186,7 +1216,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
                   >
                     <option value="">{t.taskModal.runAfterNone}</option>
                     {existingTasks
-                      .filter(t => !initialTask || t.id !== initialTask.id)
+                      .filter(t => !initialTask || (t.id !== initialTask.id && !descendantTaskIds.has(t.id)))
                       .map((t, idx) => (
                         <option key={t.id} value={t.id}>
                           [#{t.taskNumber ?? idx + 1}] {t.name} ({t.engine} • {t.type})

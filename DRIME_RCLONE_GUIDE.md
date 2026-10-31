@@ -9,7 +9,7 @@ Ten dokument zawiera kompendium wiedzy, zdiagnozowane problemy oraz zalecane fla
 ### Problem 1: Błąd HTTP 422 `Folder with same name already exists`
 * **Objaw w logach:**
   ```text
-  ERROR : FolderName/.../ImageName.jpg: Failed to copy: failed to make directory: failed to create folder: 
+  ERROR : Album/.../Cover.jpg: Failed to copy: failed to make directory: failed to create folder: 
   Error "422 Unprocessable Entity (422): {"message":"","errors":{"name":"Folder with same name already exists."}}"
   ```
 * **Przyczyny:**
@@ -23,7 +23,7 @@ Ten dokument zawiera kompendium wiedzy, zdiagnozowane problemy oraz zalecane fla
 ### Problem 2: Błąd `Couldn't delete: object not found` i pliki widma
 * **Objaw w logach:**
   ```text
-  ERROR : ... —— copy.jpg: Couldn't delete: object not found
+  ERROR : ... —— kopia.jpg: Couldn't delete: object not found
   ERROR : Attempt 1/3 failed with 3 errors and: failed to delete 2 files
   ```
 * **Przyczyny:**
@@ -46,7 +46,7 @@ Ten dokument zawiera kompendium wiedzy, zdiagnozowane problemy oraz zalecane fla
 ---
 
 ### Problem 4: Nietypowe myślniki i znaki typograficzne w nazwach
-* **Objaw:** Różnice wizualne w logach: `plik — copy.jpg` vs `plik —— copy.jpg` lub `Tytuł – Podtytuł`.
+* **Objaw:** Różnice wizualne w logach: `plik — kopia.jpg` vs `plik —— kopia.jpg` lub `Tytuł – Podtytuł`.
 * **Wyjaśnienie techniczne:**
   * Znak **`-`** (kod `0x2D`, `U+002D`) to standardowy myślnik ASCII (Hyphen-Minus).
   * Znak **`–`** (kod `U+2013`) to półpauza (En-Dash).
@@ -85,8 +85,6 @@ W konfiguracji zadania w SyncVault (pole *Dodatkowe flagi*) wklej poniższy zest
 
 > ⚠️ **Uwaga:** Dla backendu Drime **NIE należy stosować flagi `--fast-list`**. Powoduje ona błędy `object not found` przy usuwaniu plików.
 
-> ⚠️ **Uwaga:** Można dodać * - - * - usuń spacje do listy --excluded/wyjątków - wtedy nie będą one w ogóle wysyłane.
-
 ---
 
 ## 3. Skrypt do automatycznej naprawy myślników na dysku
@@ -97,7 +95,7 @@ Aby jednorazowo zamienić wszystkie nietypowe myślniki typograficzne (`–`, `�
 ```bash
 python3 -c "
 import os
-target_dir = '/storage/DataStore/FolderToSend'
+target_dir = '/storage/DANE/11_Muzyka'
 bad_chars = ['\u2013', '\u2014', '\u2212']
 
 for root, dirs, files in os.walk(target_dir, topdown=False):
@@ -114,7 +112,7 @@ for root, dirs, files in os.walk(target_dir, topdown=False):
 ```bash
 python3 -c "
 import os
-target_dir = '/storage/DataStore/FolderToSend'
+target_dir = '/storage/DANE/11_Muzyka'
 bad_chars = ['\u2013', '\u2014', '\u2212']
 count = 0
 
@@ -145,9 +143,9 @@ print(f'Gotowe! Zaktualizowano {count} nazw.')
 3. **Weryfikacja zawartości chmury przez rclone:**
    * Sprawdzenie listy folderów widocznych przez rclone:
      ```bash
-     rclone lsf "cryptdrime:FolderToSend/FolderName"
+     rclone lsf "cryptdrime:Muzyka/Album"
      ```
    * Sprawdzenie spójności bez przesyłania danych (dry-run):
      ```bash
-     rclone check "/storage/DataStore/FolderToSend" "cryptdrime:FolderToSend" --size-only
+     rclone check "/storage/DANE/11_Muzyka" "cryptdrime:Muzyka" --size-only
      ```
